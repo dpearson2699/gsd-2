@@ -47,6 +47,7 @@ Full documentation for `~/.gsd/preferences.md` (global) and `.gsd/preferences.md
   - `snapshots`: boolean — create snapshot commits (WIP saves) during long-running tasks. Default: `false`.
   - `pre_merge_check`: boolean or `"auto"` — run pre-merge checks before merging a slice branch. `true` always runs, `false` never runs, `"auto"` runs when CI is detected. Default: `false`.
   - `commit_type`: string — override the conventional commit type prefix. Must be one of: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`, `build`, `style`. Default: inferred from diff content.
+  - `main_branch`: string — the primary branch name for new git repos (e.g., `"main"`, `"master"`, `"trunk"`). Also used by `getMainBranch()` as the preferred branch when auto-detection is ambiguous. Default: `"main"`.
 
 ---
 

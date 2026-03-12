@@ -20,8 +20,9 @@ import {
 } from "./paths.js";
 import { join } from "node:path";
 import { readFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { ensureGitignore, ensurePreferences } from "./gitignore.js";
+import { loadEffectiveGSDPreferences } from "./preferences.js";
 
 // ─── Auto-start after discuss ─────────────────────────────────────────────────
 
@@ -444,7 +445,8 @@ export async function showSmartEntry(
   try {
     execSync("git rev-parse --git-dir", { cwd: basePath, stdio: "pipe" });
   } catch {
-    execSync("git init", { cwd: basePath, stdio: "pipe" });
+    const mainBranch = loadEffectiveGSDPreferences()?.preferences?.git?.main_branch || "main";
+    execFileSync("git", ["init", "-b", mainBranch], { cwd: basePath, stdio: "pipe" });
   }
 
   // ── Ensure .gitignore has baseline patterns ──────────────────────────

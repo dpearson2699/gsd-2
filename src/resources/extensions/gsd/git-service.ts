@@ -27,7 +27,10 @@ export interface GitPreferences {
   snapshots?: boolean;
   pre_merge_check?: boolean | string;
   commit_type?: string;
+  main_branch?: string;
 }
+
+export const VALID_BRANCH_NAME = /^[a-zA-Z0-9_\-\/.]+$/;
 
 export interface CommitOptions {
   message: string;
@@ -190,6 +193,12 @@ export class GitServiceImpl {
       const exists = this.git(["show-ref", "--verify", `refs/heads/${wtBranch}`], { allowFailure: true });
       if (exists) return wtBranch;
       return this.git(["branch", "--show-current"]);
+    }
+
+    // Explicit preference takes priority over auto-detection
+    const configured = this.prefs.main_branch;
+    if (configured && VALID_BRANCH_NAME.test(configured)) {
+      return configured;
     }
 
     const symbolic = this.git(["symbolic-ref", "refs/remotes/origin/HEAD"], { allowFailure: true });

@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { getAgentDir } from "@mariozechner/pi-coding-agent";
 import type { GitPreferences } from "./git-service.ts";
+import { VALID_BRANCH_NAME } from "./git-service.ts";
 
 const GLOBAL_PREFERENCES_PATH = join(homedir(), ".gsd", "preferences.md");
 const LEGACY_GLOBAL_PREFERENCES_PATH = join(homedir(), ".pi", "agent", "gsd-preferences.md");
@@ -637,6 +638,13 @@ function validatePreferences(preferences: GSDPreferences): {
         git.commit_type = g.commit_type;
       } else {
         errors.push(`git.commit_type must be one of: feat, fix, refactor, docs, test, chore, perf, ci, build, style`);
+      }
+    }
+    if (g.main_branch !== undefined) {
+      if (typeof g.main_branch === "string" && g.main_branch.trim() !== "" && VALID_BRANCH_NAME.test(g.main_branch)) {
+        git.main_branch = g.main_branch;
+      } else {
+        errors.push("git.main_branch must be a valid branch name (alphanumeric, _, -, /, .)");
       }
     }
 
