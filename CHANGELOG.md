@@ -6,6 +6,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.8.3] - 2026-03-13
+
+### Fixed
+- `ask_user_questions` handles undefined `custom()` result in RPC mode
+- Provider-aware model resolution for per-phase preferences (respects `provider` field instead of parsing model name prefixes)
+- Execute-task artifact verification aligned with `deriveState` — adds self-repair for missing artifacts
+- Research phase infinite loop broken; state synced on stop
+- Auto-resolve merge conflicts on `.gsd/` runtime files
+- Auto-switch model after `/login` and `/logout` to prevent API key errors
+- Anthropic provider detection uses `provider` field instead of model name prefix matching
+
 ## [2.8.2] - 2026-03-13
 
 ### Fixed
@@ -324,7 +335,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - License updated to MIT
 
-[Unreleased]: https://github.com/gsd-build/gsd-2/compare/v2.8.2...HEAD
+[Unreleased]: https://github.com/gsd-build/gsd-2/compare/v2.8.3...HEAD
+[2.8.3]: https://github.com/gsd-build/gsd-2/compare/v2.8.2...v2.8.3
 [2.8.2]: https://github.com/gsd-build/gsd-2/compare/v2.8.1...v2.8.2
 [2.8.1]: https://github.com/gsd-build/gsd-2/compare/v2.8.0...v2.8.1
 [2.8.0]: https://github.com/gsd-build/gsd-2/compare/v2.7.1...v2.8.0
