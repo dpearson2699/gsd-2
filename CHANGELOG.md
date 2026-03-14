@@ -23,6 +23,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Eliminated branch checkout during slice merge that caused STATE.md conflicts (#307)
 - Removed infinite delivery retry loop for background job completions (#301)
 - Display ⌥ instead of Alt for keybindings on macOS (#299)
+- Publish verification checks `dist/loader.js` is non-empty (`-s`) and uses `--ignore-scripts` on `npm pack --dry-run` to match actual publish behaviour (#298)
 
 ### Removed
 - Deprecated legacy dead code from OAuth module
