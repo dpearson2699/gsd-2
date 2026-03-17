@@ -129,6 +129,23 @@ export default function (pi: ExtensionAPI) {
   registerWorktreeCommand(pi);
   registerExitCommand(pi);
 
+  // ── EPIPE guard — prevent crash when stdout/stderr pipe closes unexpectedly ──
+  // Node.js throws a fatal `Error: write EPIPE` when the parent process closes
+  // its end of the stdio pipe (e.g. during shell/IPC teardown) while auto-mode
+  // is still writing diagnostics. Catching this here gives auto-mode a clean
+  // chance to persist state and pause instead of crashing (see issue #739).
+  if (!process.listeners("uncaughtException").some(l => l.name === "_gsdEpipeGuard")) {
+    const _gsdEpipeGuard = (err: Error): void => {
+      if ((err as NodeJS.ErrnoException).code === "EPIPE") {
+        // Pipe closed — nothing we can write; just exit cleanly
+        process.exit(0);
+      }
+      // Re-throw anything that isn't EPIPE so real crashes still surface
+      throw err;
+    };
+    process.on("uncaughtException", _gsdEpipeGuard);
+  }
+
   // ── /kill — immediate exit (bypass cleanup) ─────────────────────────────
   pi.registerCommand("kill", {
     description: "Exit GSD immediately (no cleanup)",

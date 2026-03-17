@@ -14,7 +14,7 @@ import type { GSDPreferences } from "./preferences.js";
 import type { UatType } from "./files.js";
 import { loadFile, extractUatType, loadActiveOverrides } from "./files.js";
 import {
-  resolveMilestoneFile, resolveMilestonePath, resolveSliceFile,
+  resolveMilestoneFile, resolveMilestonePath, resolveSliceFile, resolveTaskFile,
   relSliceFile, buildMilestoneFileName,
 } from "./paths.js";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -249,6 +249,20 @@ const DISPATCH_RULES: DispatchRule[] = [
       const sTitle = state.activeSlice!.title;
       const tid = state.activeTask.id;
       const tTitle = state.activeTask.title;
+
+      // Guard: refuse to dispatch execute-task when the task plan file is missing.
+      // This prevents the agent from running blind after a failed plan-slice that
+      // wrote S{sid}-PLAN.md but omitted the individual T{tid}-PLAN.md files.
+      // (See issue #739 — missing task plan caused runaway execution and EPIPE crash.)
+      const taskPlanPath = resolveTaskFile(basePath, mid, sid, tid, "PLAN");
+      if (!taskPlanPath || !existsSync(taskPlanPath)) {
+        return {
+          action: "stop",
+          reason: `Task plan ${tid}-PLAN.md is missing for ${mid}/${sid}/${tid}. Re-run plan-slice to regenerate task plans, or create the file manually and resume.`,
+          level: "error",
+        };
+      }
+
       return {
         action: "dispatch",
         unitType: "execute-task",

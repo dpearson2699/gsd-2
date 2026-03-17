@@ -11,7 +11,7 @@ import type { ExtensionContext } from "@gsd/pi-coding-agent";
 import {
   clearUnitRuntimeRecord,
 } from "./unit-runtime.js";
-import { clearParseCache } from "./files.js";
+import { clearParseCache, parseRoadmap, parsePlan } from "./files.js";
 import {
   nativeConflictFiles,
   nativeCommit,
@@ -36,7 +36,6 @@ import {
   clearPathCache,
   resolveGsdRootFile,
 } from "./paths.js";
-import { parseRoadmap } from "./files.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -157,6 +156,31 @@ export function verifyExpectedArtifact(unitType: string, unitId: string, base: s
         const escapedTid = tid.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         const re = new RegExp(`^- \\[[xX]\\] \\*\\*${escapedTid}:`, "m");
         if (!re.test(planContent)) return false;
+      }
+    }
+  }
+
+  // plan-slice must also produce individual task plan files for every task listed
+  // in the slice plan. Without this check, a plan-slice that wrote S{sid}-PLAN.md
+  // but omitted T{tid}-PLAN.md files would be marked complete, causing execute-task
+  // to dispatch with a missing task plan (see issue #739).
+  if (unitType === "plan-slice") {
+    const parts = unitId.split("/");
+    const mid = parts[0];
+    const sid = parts[1];
+    if (mid && sid) {
+      try {
+        const planContent = readFileSync(absPath, "utf-8");
+        const plan = parsePlan(planContent);
+        const tasksDir = resolveTasksDir(base, mid, sid);
+        if (plan.tasks.length > 0 && tasksDir) {
+          for (const task of plan.tasks) {
+            const taskPlanFile = join(tasksDir, `${task.id}-PLAN.md`);
+            if (!existsSync(taskPlanFile)) return false;
+          }
+        }
+      } catch {
+        // Parse failure — don't block; slice plan may have non-standard format
       }
     }
   }
