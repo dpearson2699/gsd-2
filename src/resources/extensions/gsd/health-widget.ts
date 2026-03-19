@@ -15,7 +15,6 @@ import { runEnvironmentChecks } from "./doctor-environment.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import { loadLedgerFromDisk, getProjectTotals } from "./metrics.js";
 import { describeNextUnit, estimateTimeRemaining, updateSliceProgressCache } from "./auto-dashboard.js";
-import { computeProgressScore } from "./progress-score.js";
 import { projectRoot } from "./commands.js";
 import { deriveState, invalidateStateCache } from "./state.js";
 import {
@@ -77,12 +76,20 @@ function compactText(text: string, max = 64): string {
 }
 
 function summarizeExecutionStatus(state: GSDState): string {
-  if (state.phase === "blocked") return "Blocked";
-  if (state.phase === "paused") return "Paused";
-  if (state.phase === "complete") return "Complete";
-
-  const score = computeProgressScore();
-  return score.summary.split(" — ")[0] ?? score.summary;
+  switch (state.phase) {
+    case "blocked": return "Blocked";
+    case "paused": return "Paused";
+    case "complete": return "Complete";
+    case "executing": return "Executing";
+    case "planning": return "Planning";
+    case "pre-planning": return "Pre-planning";
+    case "summarizing": return "Summarizing";
+    case "validating-milestone": return "Validating";
+    case "completing-milestone": return "Completing";
+    case "needs-discussion": return "Needs discussion";
+    case "replanning-slice": return "Replanning";
+    default: return "Active";
+  }
 }
 
 function summarizeExecutionTarget(state: GSDState): string {
@@ -122,6 +129,7 @@ async function enrichHealthWidgetData(basePath: string, baseData: HealthWidgetDa
     const state = await deriveState(basePath);
 
     if (state.activeMilestone) {
+      // Warm the slice-progress cache so estimateTimeRemaining() has data
       updateSliceProgressCache(basePath, state.activeMilestone.id, state.activeSlice?.id);
     }
 
@@ -176,12 +184,13 @@ export function initHealthWidget(ctx: ExtensionContext): void {
         data = await enrichHealthWidgetData(basePath, baseData);
         cachedLines = undefined;
         _tui.requestRender();
-      } catch { /* non-fatal */ }
-      finally {
+      } catch { /* non-fatal */ } finally {
         refreshInFlight = false;
       }
     };
 
+    // Fire first enrichment immediately. requestRender() inside is a no-op
+    // if the widget has not yet rendered, so this is safe before factory return.
     void refresh();
 
     const refreshTimer = setInterval(() => {

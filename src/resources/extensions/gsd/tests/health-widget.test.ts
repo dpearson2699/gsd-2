@@ -82,7 +82,7 @@ test("buildHealthLines: initialized state shows continue setup copy", () => {
 
 test("buildHealthLines: active state leads with execution summary", () => {
   const lines = buildHealthLines(activeData({
-    executionStatus: "Progressing well",
+    executionStatus: "Executing",
     executionTarget: "Plan S01",
     progress: {
       milestones: { done: 0, total: 1 },
@@ -92,13 +92,13 @@ test("buildHealthLines: active state leads with execution summary", () => {
   }));
 
   assert.equal(lines.length, 2);
-  assert.equal(lines[0], "  GSD  Progressing well — Plan S01");
+  assert.equal(lines[0], "  GSD  Executing - Plan S01");
   assert.match(lines[1]!, /Progress: M 0\/1 · S 0\/3 · T 0\/5/);
 });
 
 test("buildHealthLines: active state keeps issues secondary", () => {
   const lines = buildHealthLines(activeData({
-    executionStatus: "Struggling",
+    executionStatus: "Planning",
     executionTarget: "Execute T03",
     providerIssue: "✗ Anthropic (Claude) key missing",
     environmentWarningCount: 1,
@@ -106,7 +106,7 @@ test("buildHealthLines: active state keeps issues secondary", () => {
   }));
 
   assert.equal(lines.length, 2);
-  assert.equal(lines[0], "  GSD  Struggling — Execute T03");
+  assert.equal(lines[0], "  GSD  Planning - Execute T03");
   assert.match(lines[1]!, /✗ Anthropic \(Claude\) key missing/);
   assert.match(lines[1]!, /Env: 1 warning/);
   assert.match(lines[1]!, /Spent: 42\.0¢/);
@@ -119,7 +119,7 @@ test("buildHealthLines: blocked state explains wait reason", () => {
     blocker: "M002 is waiting on unmet deps: M001",
   }));
 
-  assert.equal(lines[0], "  GSD  Blocked — waiting on unmet deps: M001");
+  assert.equal(lines[0], "  GSD  Blocked - waiting on unmet deps: M001");
 });
 
 test("buildHealthLines: paused state can omit secondary line", () => {
@@ -128,12 +128,12 @@ test("buildHealthLines: paused state can omit secondary line", () => {
     executionTarget: "waiting to resume",
   }));
 
-  assert.deepEqual(lines, ["  GSD  Paused — waiting to resume"]);
+  assert.deepEqual(lines, ["  GSD  Paused - waiting to resume"]);
 });
 
 test("buildHealthLines: active state with budget ceiling shows percent summary", () => {
   const lines = buildHealthLines(activeData({
-    executionStatus: "Progressing well",
+    executionStatus: "Executing",
     executionTarget: "Plan S01",
     budgetSpent: 2.5,
     budgetCeiling: 10,

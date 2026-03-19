@@ -5,9 +5,9 @@
  * runtime integrations so the regressions can be tested directly.
  */
 
-import { existsSync } from "node:fs";
-import { detectProjectState } from "./detection.js";
+import { existsSync, readdirSync } from "node:fs";
 import { gsdRoot } from "./paths.js";
+import { join } from "node:path";
 import type { GSDState, Phase } from "./types.js";
 
 export type HealthWidgetProjectState = "none" | "initialized" | "active";
@@ -33,10 +33,20 @@ export interface HealthWidgetData {
 }
 
 export function detectHealthWidgetProjectState(basePath: string): HealthWidgetProjectState {
-  if (!existsSync(gsdRoot(basePath))) return "none";
+  const root = gsdRoot(basePath);
+  if (!existsSync(root)) return "none";
 
-  const { state } = detectProjectState(basePath);
-  return state === "v2-gsd" ? "active" : "initialized";
+  // Lightweight milestone count — avoids the full detectProjectState() scan
+  // (CI markers, Makefile targets, etc.) that is unnecessary on the 60s refresh.
+  try {
+    const milestonesDir = join(root, "milestones");
+    if (existsSync(milestonesDir)) {
+      const entries = readdirSync(milestonesDir, { withFileTypes: true });
+      if (entries.some(e => e.isDirectory())) return "active";
+    }
+  } catch { /* non-fatal */ }
+
+  return "initialized";
 }
 
 function formatCost(n: number): string {
@@ -76,7 +86,7 @@ function formatBudgetSummary(data: HealthWidgetData): string | null {
 function buildExecutionHeadline(data: HealthWidgetData): string {
   const status = data.executionStatus ?? "Active project";
   const target = data.executionTarget ?? data.blocker ?? "loading status…";
-  return `  GSD  ${status}${target ? ` — ${target}` : ""}`;
+  return `  GSD  ${status}${target ? ` - ${target}` : ""}`;
 }
 
 /**
