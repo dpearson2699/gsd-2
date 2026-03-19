@@ -6,6 +6,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.33.1] - 2026-03-19
+
+### Fixed
+- clean up stale numbered lock files and harden signal/exit handling (#1315) (#1323)
+- worktree sync and home-directory safety check (#1311, #1317) (#1322)
+
+### Changed
+- remove orphaned mcporter extension manifest (#1318)
+
 ## [2.33.0] - 2026-03-19
 
 ### Added
@@ -1309,7 +1318,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - License updated to MIT
 
-[Unreleased]: https://github.com/gsd-build/gsd-2/compare/v2.33.0...HEAD
+[Unreleased]: https://github.com/gsd-build/gsd-2/compare/v2.33.1...HEAD
+[2.33.1]: https://github.com/gsd-build/gsd-2/compare/v2.33.0...v2.33.1
 [2.33.0]: https://github.com/gsd-build/gsd-2/compare/v2.32.0...v2.33.0
 [2.32.0]: https://github.com/gsd-build/gsd-2/compare/v2.31.2...v2.32.0
 [2.31.2]: https://github.com/gsd-build/gsd-2/compare/v2.31.1...v2.31.2
