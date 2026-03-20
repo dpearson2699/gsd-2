@@ -6,10 +6,11 @@
  * symlink replaces the original directory so all paths remain valid.
  */
 
-import { existsSync, lstatSync, mkdirSync, readdirSync, renameSync, cpSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, renameSync, cpSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { externalGsdRoot } from "./repo-identity.js";
 import { getErrorMessage } from "./error-utils.js";
+import { hasGitTrackedGsdFiles } from "./gitignore.js";
 
 export interface MigrationResult {
   migrated: boolean;
@@ -49,6 +50,28 @@ export function migrateToExternalState(basePath: string): MigrationResult {
     }
   } catch (err) {
     return { migrated: false, error: `Cannot stat .gsd: ${getErrorMessage(err)}` };
+  }
+
+  // Skip if .gsd/ contains git-tracked files — the project intentionally
+  // keeps .gsd/ in version control and migration would destroy that.
+  if (hasGitTrackedGsdFiles(basePath)) {
+    return { migrated: false };
+  }
+
+  // Skip if .gsd/worktrees/ has active worktree directories (#1337).
+  // On Windows, active git worktrees hold OS-level directory handles that
+  // prevent rename/delete. Attempting migration causes EBUSY and data loss.
+  const worktreesDir = join(localGsd, "worktrees");
+  if (existsSync(worktreesDir)) {
+    try {
+      const entries = readdirSync(worktreesDir, { withFileTypes: true });
+      if (entries.some(e => e.isDirectory())) {
+        return { migrated: false };
+      }
+    } catch {
+      // Can't read worktrees dir — skip migration to be safe
+      return { migrated: false };
+    }
   }
 
   const externalPath = externalGsdRoot(basePath);
@@ -99,7 +122,29 @@ export function migrateToExternalState(basePath: string): MigrationResult {
     // Create symlink .gsd -> external path
     symlinkSync(externalPath, localGsd, "junction");
 
-    // Remove .gsd.migrating
+    // Verify the symlink resolves correctly before removing the backup (#1377).
+    // On Windows, junction creation can silently succeed but resolve to the wrong
+    // target, or the external dir may not be accessible. If verification fails,
+    // restore from the backup.
+    try {
+      const resolved = realpathSync(localGsd);
+      const resolvedExternal = realpathSync(externalPath);
+      if (resolved !== resolvedExternal) {
+        // Symlink points to wrong target — restore backup
+        try { rmSync(localGsd, { force: true }); } catch { /* may not exist */ }
+        renameSync(migratingPath, localGsd);
+        return { migrated: false, error: `Migration verification failed: symlink resolves to ${resolved}, expected ${resolvedExternal}` };
+      }
+      // Verify we can read through the symlink
+      readdirSync(localGsd);
+    } catch (verifyErr) {
+      // Symlink broken or unreadable — restore backup
+      try { rmSync(localGsd, { force: true }); } catch { /* may not exist */ }
+      try { renameSync(migratingPath, localGsd); } catch { /* best-effort restore */ }
+      return { migrated: false, error: `Migration verification failed: ${getErrorMessage(verifyErr)}` };
+    }
+
+    // Remove .gsd.migrating only after symlink is verified
     rmSync(migratingPath, { recursive: true, force: true });
 
     return { migrated: true };

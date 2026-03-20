@@ -45,7 +45,28 @@ export type DoctorIssueCode =
   | "env_python"
   | "env_cargo"
   | "env_go"
-  | "env_git_remote";
+  | "env_git_remote"
+  // Provider / auth checks
+  | "provider_key_missing"
+  | "provider_key_backedoff"
+  // Lock infrastructure checks
+  | "stranded_lock_directory"
+  // Git / worktree integrity checks
+  | "integration_branch_missing"
+  | "worktree_directory_orphaned"
+  // GSD state structural checks
+  | "circular_slice_dependency"
+  | "orphaned_slice_directory"
+  | "duplicate_task_id"
+  | "task_file_not_in_plan"
+  | "stale_replan_file"
+  | "future_timestamp"
+  // Runtime data integrity
+  | "metrics_ledger_corrupt"
+  | "large_planning_file"
+  // Slow environment checks (opt-in via --build / --test flags)
+  | "env_build"
+  | "env_test";
 
 /**
  * Issue codes that represent expected completion-transition states.
@@ -75,6 +96,8 @@ export interface DoctorReport {
   basePath: string;
   issues: DoctorIssue[];
   fixesApplied: string[];
+  /** Per-domain check durations in milliseconds. Present on explicit /gsd doctor runs. */
+  timing?: { git: number; runtime: number; environment: number; gsdState: number };
 }
 
 export interface DoctorSummary {

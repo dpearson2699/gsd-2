@@ -5,6 +5,9 @@
  */
 
 import type { ExtensionCommandContext } from "@gsd/pi-coding-agent";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { gsdRoot } from "./paths.js";
 import { getErrorMessage } from "./error-utils.js";
 
 export interface InspectData {
@@ -44,11 +47,15 @@ export function formatInspectOutput(data: InspectData): string {
 
 export async function handleInspect(ctx: ExtensionCommandContext): Promise<void> {
   try {
-    const { isDbAvailable, _getAdapter } = await import("./gsd-db.js");
+    const { isDbAvailable, _getAdapter, openDatabase } = await import("./gsd-db.js");
 
     if (!isDbAvailable()) {
-      ctx.ui.notify("No GSD database available. Run /gsd auto to create one.", "info");
-      return;
+      const gsdDir = gsdRoot(process.cwd());
+      const dbPath = join(gsdDir, "gsd.db");
+      if (!existsSync(gsdDir) || !existsSync(dbPath) || !openDatabase(dbPath)) {
+        ctx.ui.notify("No GSD database available. Run /gsd auto to create one.", "info");
+        return;
+      }
     }
 
     const adapter = _getAdapter();

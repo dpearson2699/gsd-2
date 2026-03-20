@@ -15,6 +15,7 @@ import { appendOverride, appendKnowledge } from "./files.js";
 import {
   formatDoctorIssuesForPrompt,
   formatDoctorReport,
+  formatDoctorReportJson,
   runGSDDoctor,
   selectDoctorScope,
   filterDoctorIssues,
@@ -24,7 +25,7 @@ import { projectRoot } from "./commands.js";
 import { loadPrompt } from "./prompt-loader.js";
 
 export function dispatchDoctorHeal(pi: ExtensionAPI, scope: string | undefined, reportText: string, structuredIssues: string): void {
-  const workflowPath = process.env.GSD_WORKFLOW_PATH ?? join(process.env.HOME ?? "~", ".pi", "GSD-WORKFLOW.md");
+  const workflowPath = process.env.GSD_WORKFLOW_PATH ?? join(process.env.HOME ?? "~", ".gsd", "agent", "GSD-WORKFLOW.md");
   const workflow = readFileSync(workflowPath, "utf-8");
   const prompt = loadPrompt("doctor-heal", {
     doctorSummary: reportText,
@@ -43,15 +44,29 @@ export function dispatchDoctorHeal(pi: ExtensionAPI, scope: string | undefined, 
 
 export async function handleDoctor(args: string, ctx: ExtensionCommandContext, pi: ExtensionAPI): Promise<void> {
   const trimmed = args.trim();
-  const parts = trimmed ? trimmed.split(/\s+/) : [];
+  // Extract flags before positional parsing
+  const jsonMode = trimmed.includes("--json");
+  const dryRun = trimmed.includes("--dry-run");
+  const includeBuild = trimmed.includes("--build");
+  const includeTests = trimmed.includes("--test");
+  const stripped = trimmed.replace(/--json|--dry-run|--build|--test/g, "").trim();
+  const parts = stripped ? stripped.split(/\s+/) : [];
   const mode = parts[0] === "fix" || parts[0] === "heal" || parts[0] === "audit" ? parts[0] : "doctor";
   const requestedScope = mode === "doctor" ? parts[0] : parts[1];
   const scope = await selectDoctorScope(projectRoot(), requestedScope);
   const effectiveScope = mode === "audit" ? requestedScope : scope;
   const report = await runGSDDoctor(projectRoot(), {
-    fix: mode === "fix" || mode === "heal",
+    fix: mode === "fix" || mode === "heal" || dryRun,
+    dryRun,
     scope: effectiveScope,
+    includeBuild,
+    includeTests,
   });
+
+  if (jsonMode) {
+    ctx.ui.notify(formatDoctorReportJson(report), "info");
+    return;
+  }
 
   const reportText = formatDoctorReport(report, {
     scope: effectiveScope,
@@ -187,7 +202,7 @@ export async function handleTriage(ctx: ExtensionCommandContext, pi: ExtensionAP
     roadmapContext: roadmapContext || "(no active roadmap)",
   });
 
-  const workflowPath = process.env.GSD_WORKFLOW_PATH ?? join(process.env.HOME ?? "~", ".pi", "GSD-WORKFLOW.md");
+  const workflowPath = process.env.GSD_WORKFLOW_PATH ?? join(process.env.HOME ?? "~", ".gsd", "agent", "GSD-WORKFLOW.md");
   const workflow = readFileSync(workflowPath, "utf-8");
 
   pi.sendMessage(

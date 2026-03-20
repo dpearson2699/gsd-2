@@ -3,6 +3,7 @@ import type { AssistantMessage, AssistantMessageEvent, Context, Model, SimpleStr
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import type { BedrockOptions } from "./amazon-bedrock.js";
 import { streamAnthropic, streamSimpleAnthropic } from "./anthropic.js";
+import { streamAnthropicVertex, streamSimpleAnthropicVertex } from "./anthropic-vertex.js";
 import { streamAzureOpenAIResponses, streamSimpleAzureOpenAIResponses } from "./azure-openai-responses.js";
 import { streamGoogle, streamSimpleGoogle } from "./google.js";
 import { streamGoogleGeminiCli, streamSimpleGoogleGeminiCli } from "./google-gemini-cli.js";
@@ -116,7 +117,7 @@ function streamSimpleBedrockLazy(
 	return outer;
 }
 
-export function registerBuiltInApiProviders(): void {
+function registerBuiltInApiProviders(): void {
 	registerApiProvider({
 		api: "anthropic-messages",
 		stream: streamAnthropic,
@@ -169,6 +170,12 @@ export function registerBuiltInApiProviders(): void {
 		api: "google-vertex",
 		stream: streamGoogleVertex,
 		streamSimple: streamSimpleGoogleVertex,
+	});
+
+	registerApiProvider({
+		api: "anthropic-vertex",
+		stream: streamAnthropicVertex,
+		streamSimple: streamSimpleAnthropicVertex,
 	});
 
 	registerApiProvider({

@@ -1,15 +1,15 @@
-import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { join, sep } from "node:path";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
+import { basename, dirname, join, sep } from "node:path";
 
 import type { DoctorIssue, DoctorIssueCode } from "./doctor-types.js";
 import { loadFile, parseRoadmap } from "./files.js";
 import { resolveMilestoneFile, milestonesDir, gsdRoot, resolveGsdRootFile, relGsdRootFile } from "./paths.js";
 import { deriveState, isMilestoneComplete } from "./state.js";
 import { saveFile } from "./files.js";
-import { listWorktrees, resolveGitDir } from "./worktree-manager.js";
+import { listWorktrees, resolveGitDir, worktreesDir } from "./worktree-manager.js";
 import { abortAndReset } from "./git-self-heal.js";
-import { RUNTIME_EXCLUSION_PATHS } from "./git-service.js";
-import { nativeIsRepo, nativeWorktreeRemove, nativeBranchList, nativeBranchDelete, nativeLsFiles, nativeRmCached } from "./native-git-bridge.js";
+import { RUNTIME_EXCLUSION_PATHS, readIntegrationBranch } from "./git-service.js";
+import { nativeIsRepo, nativeBranchExists, nativeWorktreeList, nativeWorktreeRemove, nativeBranchList, nativeBranchDelete, nativeLsFiles, nativeRmCached } from "./native-git-bridge.js";
 import { readCrashLock, isLockProcessAlive, clearLock } from "./crash-recovery.js";
 import { ensureGitignore } from "./gitignore.js";
 import { readAllSessionStatuses, isSessionStale, removeSessionStatus } from "./session-status-io.js";
@@ -215,6 +215,70 @@ export async function checkGitHealth(
   } catch {
     // git branch list failed — skip
   }
+
+  // ── Integration branch existence ──────────────────────────────────────
+  // For each active (non-complete) milestone, verify the stored integration
+  // branch still exists in git. A missing integration branch blocks merge-back
+  // and causes the next merge operation to fail silently.
+  try {
+    const state = await deriveState(basePath);
+    for (const milestone of state.registry) {
+      if (milestone.status === "complete") continue;
+      const integrationBranch = readIntegrationBranch(basePath, milestone.id);
+      if (!integrationBranch) continue; // No stored branch — skip (not yet set)
+      if (!nativeBranchExists(basePath, integrationBranch)) {
+        issues.push({
+          severity: "error",
+          code: "integration_branch_missing",
+          scope: "milestone",
+          unitId: milestone.id,
+          message: `Milestone ${milestone.id} recorded integration branch "${integrationBranch}" but that branch no longer exists in git. Merge-back will fail.`,
+          fixable: false,
+        });
+      }
+    }
+  } catch {
+    // Non-fatal — integration branch check failed
+  }
+
+  // ── Orphaned worktree directories ────────────────────────────────────
+  // Worktree removal can fail after a branch delete, leaving a directory
+  // that is no longer registered with git. These orphaned dirs cause
+  // "already exists" errors when re-creating the same worktree name.
+  try {
+    const wtDir = worktreesDir(basePath);
+    if (existsSync(wtDir)) {
+      const registeredPaths = new Set(
+        nativeWorktreeList(basePath).map(entry => entry.path),
+      );
+      for (const entry of readdirSync(wtDir)) {
+        const fullPath = join(wtDir, entry);
+        try {
+          if (!statSync(fullPath).isDirectory()) continue;
+        } catch { continue; }
+        if (!registeredPaths.has(fullPath)) {
+          issues.push({
+            severity: "warning",
+            code: "worktree_directory_orphaned",
+            scope: "project",
+            unitId: entry,
+            message: `Worktree directory ${fullPath} exists on disk but is not registered with git. Run "git worktree prune" or doctor --fix to remove it.`,
+            fixable: true,
+          });
+          if (shouldFix("worktree_directory_orphaned")) {
+            try {
+              rmSync(fullPath, { recursive: true, force: true });
+              fixesApplied.push(`removed orphaned worktree directory ${fullPath}`);
+            } catch {
+              fixesApplied.push(`failed to remove orphaned worktree directory ${fullPath}`);
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // Non-fatal — orphaned worktree directory check failed
+  }
 }
 
 // ── Runtime Health Checks ──────────────────────────────────────────────────
@@ -253,6 +317,44 @@ export async function checkRuntimeHealth(
     }
   } catch {
     // Non-fatal — crash lock check failed
+  }
+
+  // ── Stranded lock directory ────────────────────────────────────────────
+  // proper-lockfile creates a `.gsd.lock/` directory as the OS-level lock
+  // mechanism. If the process was SIGKILLed or crashed hard, this directory
+  // can remain on disk without any live process holding it. The next session
+  // fails to acquire the lock until the directory is removed (#1245).
+  try {
+    const lockDir = join(dirname(root), `${basename(root)}.lock`);
+    if (existsSync(lockDir)) {
+      const statRes = statSync(lockDir);
+      if (statRes.isDirectory()) {
+        // Check if any live process actually holds this lock
+        const lock = readCrashLock(basePath);
+        const lockHolderAlive = lock ? isLockProcessAlive(lock) : false;
+        if (!lockHolderAlive) {
+          issues.push({
+            severity: "error",
+            code: "stranded_lock_directory",
+            scope: "project",
+            unitId: "project",
+            message: `Stranded lock directory "${lockDir}" exists but no live process holds the session lock. This blocks new auto-mode sessions from starting.`,
+            file: lockDir,
+            fixable: true,
+          });
+          if (shouldFix("stranded_lock_directory")) {
+            try {
+              rmSync(lockDir, { recursive: true, force: true });
+              fixesApplied.push(`removed stranded lock directory ${lockDir}`);
+            } catch {
+              fixesApplied.push(`failed to remove stranded lock directory ${lockDir}`);
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // Non-fatal — stranded lock directory check failed
   }
 
   // ── Stale parallel sessions ────────────────────────────────────────────
@@ -314,10 +416,9 @@ export async function checkRuntimeHealth(
         });
 
         if (shouldFix("orphaned_completed_units")) {
-          const { removePersistedKey } = await import("./auto-recovery.js");
-          for (const key of orphaned) {
-            removePersistedKey(basePath, key);
-          }
+          const orphanedSet = new Set(orphaned);
+          const remaining = keys.filter((key) => !orphanedSet.has(key));
+          await saveFile(completedKeysFile, JSON.stringify(remaining));
           fixesApplied.push(`removed ${orphaned.length} orphaned completed-unit key(s)`);
         }
       }
@@ -555,6 +656,81 @@ export async function checkRuntimeHealth(
     }
   } catch {
     // Non-fatal — external state check failed
+  }
+
+  // ── Metrics ledger integrity ───────────────────────────────────────────
+  try {
+    const metricsPath = join(root, "metrics.json");
+    if (existsSync(metricsPath)) {
+      try {
+        const raw = readFileSync(metricsPath, "utf-8");
+        const ledger = JSON.parse(raw);
+        if (ledger.version !== 1 || !Array.isArray(ledger.units)) {
+          issues.push({
+            severity: "warning",
+            code: "metrics_ledger_corrupt",
+            scope: "project",
+            unitId: "project",
+            message: "metrics.json has an unexpected structure (version !== 1 or units is not an array) — metrics data may be unreliable",
+            file: ".gsd/metrics.json",
+            fixable: false,
+          });
+        }
+      } catch {
+        issues.push({
+          severity: "warning",
+          code: "metrics_ledger_corrupt",
+          scope: "project",
+          unitId: "project",
+          message: "metrics.json is not valid JSON — metrics data may be corrupt",
+          file: ".gsd/metrics.json",
+          fixable: false,
+        });
+      }
+    }
+  } catch {
+    // Non-fatal — metrics check failed
+  }
+
+  // ── Large planning file detection ──────────────────────────────────────
+  // Files over 100KB can cause LLM context pressure. Report the worst offenders.
+  try {
+    const MAX_FILE_BYTES = 100 * 1024; // 100KB
+    const milestonesPath = milestonesDir(basePath);
+    if (existsSync(milestonesPath)) {
+      const largeFiles: Array<{ path: string; sizeKB: number }> = [];
+      function scanForLargeFiles(dir: string, depth = 0): void {
+        if (depth > 6) return;
+        try {
+          for (const entry of readdirSync(dir)) {
+            const full = join(dir, entry);
+            try {
+              const s = statSync(full);
+              if (s.isDirectory()) { scanForLargeFiles(full, depth + 1); continue; }
+              if (entry.endsWith(".md") && s.size > MAX_FILE_BYTES) {
+                largeFiles.push({ path: full.replace(basePath + "/", ""), sizeKB: Math.round(s.size / 1024) });
+              }
+            } catch { /* skip entry */ }
+          }
+        } catch { /* skip dir */ }
+      }
+      scanForLargeFiles(milestonesPath);
+      if (largeFiles.length > 0) {
+        largeFiles.sort((a, b) => b.sizeKB - a.sizeKB);
+        const worst = largeFiles[0]!;
+        issues.push({
+          severity: "warning",
+          code: "large_planning_file",
+          scope: "project",
+          unitId: "project",
+          message: `${largeFiles.length} planning file(s) exceed 100KB — largest: ${worst.path} (${worst.sizeKB}KB). Large files cause LLM context pressure.`,
+          file: worst.path,
+          fixable: false,
+        });
+      }
+    }
+  } catch {
+    // Non-fatal — large file scan failed
   }
 }
 

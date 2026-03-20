@@ -13,14 +13,17 @@ export {
 	stripAnsi,
 	formatTokenCount,
 	formatDuration,
-	padRight,
-	joinColumns,
-	centerLine,
-	fitColumns,
 	sparkline,
 	normalizeStringArray,
 	fileLink,
 } from "./format-utils.js";
+
+export {
+	padRight,
+	joinColumns,
+	centerLine,
+	fitColumns,
+} from "./layout-utils.js";
 
 export { shortcutDesc } from "./terminal.js";
 export { toPosixPath } from "./path-display.js";
@@ -28,6 +31,6 @@ export { showInterviewRound } from "./interview-ui.js";
 export type { Question, QuestionOption, RoundResult } from "./interview-ui.js";
 export { showNextAction } from "./next-action-ui.js";
 export { showConfirm } from "./confirm-ui.js";
-export { sanitizeError } from "./sanitize.js";
+export { sanitizeError, maskEditorLine } from "./sanitize.js";
 export { formatDateShort, truncateWithEllipsis } from "./format-utils.js";
 export { splitFrontmatter, parseFrontmatterMap } from "./frontmatter.js";

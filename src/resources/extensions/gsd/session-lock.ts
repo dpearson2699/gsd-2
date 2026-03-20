@@ -40,6 +40,19 @@ export type SessionLockResult =
   | { acquired: true }
   | { acquired: false; reason: string; existingPid?: number };
 
+export type SessionLockFailureReason =
+  | "compromised"
+  | "missing-metadata"
+  | "pid-mismatch";
+
+export interface SessionLockStatus {
+  valid: boolean;
+  failureReason?: SessionLockFailureReason;
+  existingPid?: number;
+  expectedPid?: number;
+  recovered?: boolean;
+}
+
 // ─── Module State ───────────────────────────────────────────────────────────
 
 /** Release function from proper-lockfile — calling it releases the OS lock. */
@@ -57,9 +70,19 @@ let _lockCompromised: boolean = false;
 /** Whether we've already registered a process.on('exit') handler. */
 let _exitHandlerRegistered: boolean = false;
 
+/** Snapshotted lock file path — captured at acquireSessionLock time to avoid
+ *  gsdRoot() resolving differently in worktree vs project root contexts (#1363). */
+let _snapshotLockPath: string | null = null;
+
+/** Timestamp when the session lock was acquired — used to detect false-positive
+ *  onCompromised events from event loop stalls within the stale window (#1362). */
+let _lockAcquiredAt: number = 0;
+
 const LOCK_FILE = "auto.lock";
 
 function lockPath(basePath: string): string {
+  // If we have a snapshotted path from acquisition, use it for consistency
+  if (_snapshotLockPath) return _snapshotLockPath;
   return join(gsdRoot(basePath), LOCK_FILE);
 }
 
@@ -121,6 +144,12 @@ function ensureExitHandler(gsdDir: string): void {
   process.once("exit", () => {
     try {
       if (_releaseFunction) { _releaseFunction(); _releaseFunction = null; }
+    } catch { /* best-effort */ }
+    // Remove the auto.lock metadata file so crash-recovery doesn't
+    // falsely detect an interrupted session on the next startup.
+    try {
+      const lockFile = join(gsdDir, LOCK_FILE);
+      if (existsSync(lockFile)) unlinkSync(lockFile);
     } catch { /* best-effort */ }
     try {
       const lockDir = join(gsdDir + ".lock");
@@ -192,8 +221,19 @@ export function acquireSessionLock(basePath: string): SessionLockResult {
       onCompromised: () => {
         // proper-lockfile detected mtime drift (system sleep, event loop stall, etc.).
         // Default handler throws inside setTimeout — an uncaught exception that crashes
-        // or corrupts process state. Instead, set a flag so validateSessionLock() can
-        // detect the compromise gracefully on the next dispatch cycle.
+        // or corrupts process state.
+        //
+        // False-positive suppression (#1362): If we're still within the stale window
+        // (30 min since acquisition), the mtime mismatch is from an event loop stall
+        // during a long LLM call — not a real takeover. Log and continue.
+        const elapsed = Date.now() - _lockAcquiredAt;
+        if (elapsed < 1_800_000) {
+          process.stderr.write(
+            `[gsd] Lock heartbeat mismatch after ${Math.round(elapsed / 1000)}s — event loop stall, continuing.\n`,
+          );
+          return; // Suppress false positive
+        }
+        // Past the stale window — this is a real compromise
         _lockCompromised = true;
         _releaseFunction = null;
       },
@@ -203,6 +243,8 @@ export function acquireSessionLock(basePath: string): SessionLockResult {
     _lockedPath = basePath;
     _lockPid = process.pid;
     _lockCompromised = false;
+    _lockAcquiredAt = Date.now();
+    _snapshotLockPath = lp; // Snapshot the resolved path for consistent access (#1363)
 
     // Safety net: clean up lock dir on process exit if _releaseFunction
     // wasn't called (e.g., normal exit after clean completion) (#1245).
@@ -231,6 +273,16 @@ export function acquireSessionLock(basePath: string): SessionLockResult {
           stale: 1_800_000, // 30 minutes — match primary lock settings
           update: 10_000,
           onCompromised: () => {
+            // Same false-positive suppression as the primary lock (#1512).
+            // Without this, the retry path fires _lockCompromised unconditionally
+            // on benign mtime drift (laptop sleep, heavy LLM event loop stalls).
+            const elapsed = Date.now() - _lockAcquiredAt;
+            if (elapsed < 1_800_000) {
+              process.stderr.write(
+                `[gsd] Lock heartbeat mismatch after ${Math.round(elapsed / 1000)}s — event loop stall, continuing.\n`,
+              );
+              return;
+            }
             _lockCompromised = true;
             _releaseFunction = null;
           },
@@ -239,6 +291,8 @@ export function acquireSessionLock(basePath: string): SessionLockResult {
         _lockedPath = basePath;
         _lockPid = process.pid;
         _lockCompromised = false;
+        _lockAcquiredAt = Date.now();
+        _snapshotLockPath = lp; // Snapshot for retry path too (#1363)
 
         // Safety net — uses centralized handler to avoid double-registration
         ensureExitHandler(gsdDir);
@@ -327,15 +381,40 @@ export function updateSessionLock(
  *
  * This is called periodically during the dispatch loop.
  */
-export function validateSessionLock(basePath: string): boolean {
+export function getSessionLockStatus(basePath: string): SessionLockStatus {
   // Lock was compromised by proper-lockfile (mtime drift from sleep, stall, etc.)
   if (_lockCompromised) {
-    return false;
+    // Recovery gate (#1512): Before declaring the lock lost, check if the lock
+    // file still contains our PID. If it does, no other process took over — the
+    // onCompromised fired from benign mtime drift (laptop sleep, event loop stall
+    // beyond the stale window). Attempt re-acquisition instead of giving up.
+    const lp = lockPath(basePath);
+    const existing = readExistingLockData(lp);
+    if (existing && existing.pid === process.pid) {
+      // Lock file still ours — try to re-acquire the OS lock
+      try {
+        const result = acquireSessionLock(basePath);
+        if (result.acquired) {
+          process.stderr.write(
+            `[gsd] Lock recovered after onCompromised — lock file PID matched, re-acquired.\n`,
+          );
+          return { valid: true, recovered: true };
+        }
+      } catch {
+        // Re-acquisition failed — fall through to return false
+      }
+    }
+    return {
+      valid: false,
+      failureReason: "compromised",
+      existingPid: existing?.pid,
+      expectedPid: process.pid,
+    };
   }
 
   // If we have an OS-level lock, we're still the owner
   if (_releaseFunction && _lockedPath === basePath) {
-    return true;
+    return { valid: true };
   }
 
   // Fallback: check the lock file PID
@@ -343,10 +422,27 @@ export function validateSessionLock(basePath: string): boolean {
   const existing = readExistingLockData(lp);
   if (!existing) {
     // Lock file was deleted — we lost ownership
-    return false;
+    return {
+      valid: false,
+      failureReason: "missing-metadata",
+      expectedPid: process.pid,
+    };
   }
 
-  return existing.pid === process.pid;
+  if (existing.pid !== process.pid) {
+    return {
+      valid: false,
+      failureReason: "pid-mismatch",
+      existingPid: existing.pid,
+      expectedPid: process.pid,
+    };
+  }
+
+  return { valid: true };
+}
+
+export function validateSessionLock(basePath: string): boolean {
+  return getSessionLockStatus(basePath).valid;
 }
 
 /**
@@ -388,6 +484,8 @@ export function releaseSessionLock(basePath: string): void {
   _lockedPath = null;
   _lockPid = 0;
   _lockCompromised = false;
+  _lockAcquiredAt = 0;
+  _snapshotLockPath = null;
 }
 
 /**

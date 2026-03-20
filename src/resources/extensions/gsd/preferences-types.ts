@@ -16,10 +16,11 @@ import type {
   InlineLevel,
   PhaseSkipPreferences,
   ParallelConfig,
-  CompressionStrategy,
   ContextSelectionMode,
+  ReactiveExecutionConfig,
 } from "./types.js";
 import type { DynamicRoutingConfig } from "./model-router.js";
+import type { GitHubSyncConfig } from "../github-sync/types.js";
 
 // ─── Workflow Modes ──────────────────────────────────────────────────────────
 
@@ -68,6 +69,7 @@ export const KNOWN_PREFERENCE_KEYS = new Set<string>([
   "budget_enforcement",
   "context_pause_threshold",
   "notifications",
+  "cmux",
   "remote_questions",
   "git",
   "post_unit_hooks",
@@ -82,14 +84,16 @@ export const KNOWN_PREFERENCE_KEYS = new Set<string>([
   "verification_auto_fix",
   "verification_max_retries",
   "search_provider",
-  "compression_strategy",
   "context_selection",
+  "widget_mode",
+  "reactive_execution",
+  "github",
 ]);
 
 /** Canonical list of all dispatch unit types. */
 export const KNOWN_UNIT_TYPES = [
   "research-milestone", "plan-milestone", "research-slice", "plan-slice",
-  "execute-task", "complete-slice", "replan-slice", "reassess-roadmap",
+  "execute-task", "reactive-execute", "complete-slice", "replan-slice", "reassess-roadmap",
   "run-uat", "complete-milestone",
 ] as const;
 export type UnitType = (typeof KNOWN_UNIT_TYPES)[number];
@@ -164,6 +168,14 @@ export interface RemoteQuestionsConfig {
   poll_interval_seconds?: number;  // clamped to 2-30
 }
 
+export interface CmuxPreferences {
+  enabled?: boolean;
+  notifications?: boolean;
+  sidebar?: boolean;
+  splits?: boolean;
+  browser?: boolean;
+}
+
 export interface GSDPreferences {
   version?: number;
   mode?: WorkflowMode;
@@ -182,6 +194,7 @@ export interface GSDPreferences {
   budget_enforcement?: BudgetEnforcementMode;
   context_pause_threshold?: number;
   notifications?: NotificationPreferences;
+  cmux?: CmuxPreferences;
   remote_questions?: RemoteQuestionsConfig;
   git?: GitPreferences;
   post_unit_hooks?: PostUnitHookConfig[];
@@ -198,10 +211,14 @@ export interface GSDPreferences {
   verification_max_retries?: number;
   /** Search provider preference. "brave"/"tavily"/"ollama" force that backend and disable native Anthropic search. "native" forces native only. "auto" = current default behavior. */
   search_provider?: "brave" | "tavily" | "ollama" | "native" | "auto";
-  /** Compression strategy for context that exceeds budget. "truncate" (default) drops sections, "compress" applies heuristic compression first. */
-  compression_strategy?: CompressionStrategy;
   /** Context selection mode for file inlining. "full" inlines entire files, "smart" uses semantic chunking. Default derived from token profile. */
   context_selection?: ContextSelectionMode;
+  /** Default widget display mode for auto-mode dashboard. "full" | "small" | "min" | "off". Default: "full". */
+  widget_mode?: "full" | "small" | "min" | "off";
+  /** Reactive (graph-derived parallel) task execution within slices. Disabled by default. */
+  reactive_execution?: ReactiveExecutionConfig;
+  /** GitHub sync configuration. Opt-in: syncs GSD events to GitHub Issues, Milestones, and PRs. */
+  github?: GitHubSyncConfig;
 }
 
 export interface LoadedGSDPreferences {

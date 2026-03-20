@@ -20,6 +20,7 @@ import { shouldRunOnboarding, runOnboarding } from './onboarding.js'
 import chalk from 'chalk'
 import { checkForUpdates } from './update-check.js'
 import { printHelp, printSubcommandHelp } from './help-text.js'
+import { markStartup, printStartupTimings } from './startup-timings.js'
 
 // ---------------------------------------------------------------------------
 // Minimal CLI arg parser — detects print/subagent mode flags
@@ -210,8 +211,10 @@ if (cliFlags.messages[0] === 'headless') {
 // because spawnSync(..., ["--version"]) returns EPERM despite a zero exit code.
 // Provision local managed binaries first so Pi sees them without probing PATH.
 ensureManagedTools(join(agentDir, 'bin'))
+markStartup('ensureManagedTools')
 
 const authStorage = AuthStorage.create(authFilePath)
+markStartup('AuthStorage.create')
 loadStoredEnvKeys(authStorage)
 migratePiCredentials(authStorage)
 
@@ -220,7 +223,9 @@ const { resolveModelsJsonPath } = await import('./models-resolver.js')
 const modelsJsonPath = resolveModelsJsonPath()
 
 const modelRegistry = new ModelRegistry(authStorage, modelsJsonPath)
+markStartup('ModelRegistry')
 const settingsManager = SettingsManager.create(agentDir)
+markStartup('SettingsManager.create')
 
 // Run onboarding wizard on first launch (no LLM provider configured)
 if (!isPrintMode && shouldRunOnboarding(authStorage, settingsManager.getDefaultProvider())) {
@@ -360,12 +365,14 @@ if (isPrintMode) {
 
   exitIfManagedResourcesAreNewer(agentDir)
   initResources(agentDir)
+  markStartup('initResources')
   const resourceLoader = new DefaultResourceLoader({
     agentDir,
     additionalExtensionPaths: cliFlags.extensions.length > 0 ? cliFlags.extensions : undefined,
     appendSystemPrompt,
   })
   await resourceLoader.reload()
+  markStartup('resourceLoader.reload')
 
   const { session, extensionsResult } = await createAgentSession({
     authStorage,
@@ -374,10 +381,14 @@ if (isPrintMode) {
     sessionManager,
     resourceLoader,
   })
+  markStartup('createAgentSession')
 
   if (extensionsResult.errors.length > 0) {
     for (const err of extensionsResult.errors) {
-      process.stderr.write(`[gsd] Extension load error: ${err.error}\n`)
+      // Downgrade conflicts with built-in tools to warnings (#1347)
+      const isSuperseded = err.error.includes("supersedes");
+      const prefix = isSuperseded ? "Extension conflict" : "Extension load error";
+      process.stderr.write(`[gsd] ${prefix}: ${err.error}\n`)
     }
   }
 
@@ -395,11 +406,13 @@ if (isPrintMode) {
   const mode = cliFlags.mode || 'text'
 
   if (mode === 'rpc') {
+    printStartupTimings()
     await runRpcMode(session)
     process.exit(0)
   }
 
   if (mode === 'mcp') {
+    printStartupTimings()
     const { startMcpServer } = await import('./mcp-server.js')
     await startMcpServer({
       tools: session.agent.state.tools ?? [],
@@ -409,6 +422,7 @@ if (isPrintMode) {
     await new Promise(() => {})
   }
 
+  printStartupTimings()
   await runPrintMode(session, {
     mode: mode as 'text' | 'json',
     messages: cliFlags.messages,
@@ -498,8 +512,10 @@ const sessionManager = cliFlags._selectedSessionPath
 
 exitIfManagedResourcesAreNewer(agentDir)
 initResources(agentDir)
+markStartup('initResources')
 const resourceLoader = buildResourceLoader(agentDir)
 await resourceLoader.reload()
+markStartup('resourceLoader.reload')
 
 const { session, extensionsResult } = await createAgentSession({
   authStorage,
@@ -508,10 +524,13 @@ const { session, extensionsResult } = await createAgentSession({
   sessionManager,
   resourceLoader,
 })
+markStartup('createAgentSession')
 
 if (extensionsResult.errors.length > 0) {
   for (const err of extensionsResult.errors) {
-    process.stderr.write(`[gsd] Extension load error: ${err.error}\n`)
+    const isSuperseded = err.error.includes("supersedes");
+    const prefix = isSuperseded ? "Extension conflict" : "Extension load error";
+    process.stderr.write(`[gsd] ${prefix}: ${err.error}\n`)
   }
 }
 
@@ -558,5 +577,17 @@ if (enabledModelPatterns && enabledModelPatterns.length > 0) {
   }
 }
 
+// Welcome screen — shown on every fresh interactive session before TUI takes over
+{
+  const { printWelcomeScreen } = await import('./welcome-screen.js')
+  printWelcomeScreen({
+    version: process.env.GSD_VERSION || '0.0.0',
+    modelName: settingsManager.getDefaultModel() || undefined,
+    provider: settingsManager.getDefaultProvider() || undefined,
+  })
+}
+
 const interactiveMode = new InteractiveMode(session)
+markStartup('InteractiveMode')
+printStartupTimings()
 await interactiveMode.run()

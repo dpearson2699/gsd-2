@@ -8,6 +8,8 @@ npm install -g gsd-pi
 
 Requires Node.js ≥ 22.0.0 (24 LTS recommended) and Git.
 
+> **`command not found: gsd`?** Your shell may not have npm's global bin directory in `$PATH`. Run `npm prefix -g` to find it, then add `$(npm prefix -g)/bin` to your PATH. See [Troubleshooting](./troubleshooting.md#command-not-found-gsd-after-install) for details.
+
 GSD checks for updates once every 24 hours. When a new version is available, you'll see an interactive prompt at startup with the option to update immediately or skip. You can also update from within a session with `/gsd update`.
 
 ### Set up API keys
@@ -20,6 +22,12 @@ If you use a non-Anthropic model, you'll need a search API key for web search. R
 ```
 
 See [Global API Keys](./configuration.md#global-api-keys-gsd-config) for details on supported keys.
+
+### Set up custom MCP servers
+
+If you want GSD to call local or external MCP servers, add project-local config in `.mcp.json` or `.gsd/mcp.json`.
+
+See [Configuration → MCP Servers](./configuration.md#mcp-servers) for examples and verification steps.
 
 ### VS Code Extension
 

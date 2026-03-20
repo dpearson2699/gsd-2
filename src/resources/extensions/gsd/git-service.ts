@@ -24,7 +24,7 @@ import {
   nativeDetectMainBranch,
   nativeBranchExists,
   nativeHasChanges,
-  nativeAddAll,
+  nativeAddAllWithExclusions,
   nativeResetPaths,
   nativeHasStagedChanges,
   nativeCommit,
@@ -42,6 +42,8 @@ export interface GitPreferences {
   push_branches?: boolean;
   remote?: string;
   snapshots?: boolean;
+  /** Deprecated. .gsd/ is managed externally; retained for compatibility. */
+  commit_docs?: boolean;
   pre_merge_check?: boolean | string;
   commit_type?: string;
   main_branch?: string;
@@ -93,6 +95,8 @@ export interface TaskCommitContext {
   oneLiner?: string;
   /** Files modified by this task (from task summary frontmatter) */
   keyFiles?: string[];
+  /** GitHub issue number — appends "Resolves #N" trailer when set. */
+  issueNumber?: number;
 }
 
 /**
@@ -116,12 +120,22 @@ export function buildTaskCommitMessage(ctx: TaskCommitContext): string {
   const subject = `${type}(${scope}): ${truncated}`;
 
   // Build body with key files if available
+  const bodyParts: string[] = [];
+
   if (ctx.keyFiles && ctx.keyFiles.length > 0) {
     const fileLines = ctx.keyFiles
       .slice(0, 8) // cap at 8 files to keep commit concise
       .map(f => `- ${f}`)
       .join("\n");
-    return `${subject}\n\n${fileLines}`;
+    bodyParts.push(fileLines);
+  }
+
+  if (ctx.issueNumber) {
+    bodyParts.push(`Resolves #${ctx.issueNumber}`);
+  }
+
+  if (bodyParts.length > 0) {
+    return `${subject}\n\n${bodyParts.join("\n\n")}`;
   }
 
   return subject;
@@ -223,9 +237,21 @@ export function readIntegrationBranch(basePath: string, milestoneId: string): st
  *
  * The file is committed immediately so the metadata is persisted in git.
  */
-export function writeIntegrationBranch(basePath: string, milestoneId: string, branch: string): void {
+/** Regex matching GSD quick-task branches: gsd/quick/<num>-<slug> */
+export const QUICK_BRANCH_RE = /^gsd\/quick\//;
+
+export function writeIntegrationBranch(
+  basePath: string,
+  milestoneId: string,
+  branch: string,
+  _options?: { commitDocs?: boolean },
+): void {
   // Don't record slice branches as the integration target
   if (SLICE_BRANCH_RE.test(branch)) return;
+  // Don't record quick-task branches — they are ephemeral and merge back
+  // to their origin branch on completion. Recording one as the integration
+  // target causes milestone merges to land on the wrong branch (#1293).
+  if (QUICK_BRANCH_RE.test(branch)) return;
   // Validate
   if (!VALID_BRANCH_NAME.test(branch)) return;
   // Skip if already recorded with the same branch (idempotent across restarts).
@@ -359,7 +385,9 @@ export class GitServiceImpl {
       this._runtimeFilesCleanedUp = true;
     }
 
-    // Stage everything, then unstage excluded paths.
+    // Stage everything using pathspec exclusions so excluded paths are never
+    // hashed by git. The old approach of `git add -A` followed by unstaging
+    // hangs indefinitely on repos with large untracked artifact trees (#1605).
     //
     // Exclude only RUNTIME paths from staging — not the entire .gsd/ directory.
     // When .gsd/milestones/ files are already tracked in the index (projects
@@ -369,13 +397,9 @@ export class GitServiceImpl {
     // the second half of a milestone's artifacts are never committed (#1326).
     //
     // If .gsd/ IS in .gitignore (the default for external state projects),
-    // git add -A already skips it and the reset is a harmless no-op.
-    nativeAddAll(this.basePath);
-
-    const runtimeExclusions = [...RUNTIME_EXCLUSION_PATHS, ...extraExclusions];
-    for (const exclusion of runtimeExclusions) {
-      try { nativeResetPaths(this.basePath, [exclusion]); } catch { /* path not staged — ignore */ }
-    }
+    // git add -A already skips it and the exclusions are harmless no-ops.
+    const allExclusions = [...RUNTIME_EXCLUSION_PATHS, ...extraExclusions];
+    nativeAddAllWithExclusions(this.basePath, allExclusions);
   }
 
   /** Tracks whether runtime file cleanup has run this session. */
@@ -465,9 +489,20 @@ export class GitServiceImpl {
 
     const wtName = detectWorktreeName(this.basePath);
     if (wtName) {
+      // Auto-mode worktrees use milestone/<MID> branches (wtName = milestone ID)
+      const milestoneBranch = `milestone/${wtName}`;
+      const currentBranch = nativeGetCurrentBranch(this.basePath);
+
+      // If we're on a milestone/<MID> branch, use it (auto-mode case)
+      if (currentBranch.startsWith("milestone/")) {
+        return currentBranch;
+      }
+
+      // Otherwise check for manual worktree branch (worktree/<name>)
       const wtBranch = `worktree/${wtName}`;
       if (nativeBranchExists(this.basePath, wtBranch)) return wtBranch;
-      return nativeGetCurrentBranch(this.basePath);
+
+      return currentBranch;
     }
 
     // Repo-level default detection: origin/HEAD → main → master → current branch.

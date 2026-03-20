@@ -11,9 +11,9 @@ import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 
 import type { ExtensionAPI, Theme } from "@gsd/pi-coding-agent";
-import { CURSOR_MARKER, Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth, wrapTextWithAnsi } from "@gsd/pi-tui";
+import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth, wrapTextWithAnsi } from "@gsd/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { makeUI, type ProgressStatus } from "./shared/mod.js";
+import { makeUI, maskEditorLine, type ProgressStatus } from "./shared/mod.js";
 import { parseSecretsManifest, formatSecretsManifest } from "./gsd/files.js";
 import { resolveMilestoneFile } from "./gsd/paths.js";
 import type { SecretsManifestEntry } from "./gsd/types.js";
@@ -42,39 +42,6 @@ function maskPreview(value: string): string {
 	return `${value.slice(0, 4)}${"*".repeat(Math.max(4, value.length - 8))}${value.slice(-4)}`;
 }
 
-/**
- * Replace editor visible text with masked characters while preserving ANSI cursor/sequencer codes.
- */
-function maskEditorLine(line: string): string {
-	// Keep border / metadata lines readable.
-	if (line.startsWith("─")) {
-		return line;
-	}
-
-	let output = "";
-	let i = 0;
-	while (i < line.length) {
-		if (line.startsWith(CURSOR_MARKER, i)) {
-			output += CURSOR_MARKER;
-			i += CURSOR_MARKER.length;
-			continue;
-		}
-
-		const ansiMatch = /^\x1b\[[0-9;]*m/.exec(line.slice(i));
-		if (ansiMatch) {
-			output += ansiMatch[0];
-			i += ansiMatch[0].length;
-			continue;
-		}
-
-		const ch = line[i] as string;
-		output += ch === " " ? " " : "*";
-		i += 1;
-	}
-
-	return output;
-}
-
 function shellEscapeSingle(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -100,30 +67,11 @@ async function writeEnvKey(filePath: string, key: string, value: string): Promis
 
 // ─── Exported utilities ───────────────────────────────────────────────────────
 
-/**
- * Check which keys already exist in the .env file or process.env.
- * Returns the subset of `keys` that are already set.
- * Handles ENOENT gracefully (still checks process.env).
- * Empty-string values count as existing.
- */
-export async function checkExistingEnvKeys(keys: string[], envFilePath: string): Promise<string[]> {
-	let fileContent = "";
-	try {
-		fileContent = await readFile(envFilePath, "utf8");
-	} catch {
-		// ENOENT or other read error — proceed with empty content
-	}
-
-	const existing: string[] = [];
-	for (const key of keys) {
-		const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-		const regex = new RegExp(`^${escaped}\\s*=`, "m");
-		if (regex.test(fileContent) || key in process.env) {
-			existing.push(key);
-		}
-	}
-	return existing;
-}
+// Re-export from env-utils.ts so existing consumers still work.
+// The implementation lives in env-utils.ts to avoid pulling @gsd/pi-tui
+// into modules that only need env-checking (e.g. files.ts during reports).
+import { checkExistingEnvKeys } from "./env-utils.js";
+export { checkExistingEnvKeys };
 
 /**
  * Detect the write destination based on project files in basePath.

@@ -210,7 +210,7 @@ async function main(): Promise<void> {
   const sliceId = 'S01';
   const uatPath = '.gsd/milestones/M001/slices/S01/S01-UAT.md';
   const uatResultPath = '.gsd/milestones/M001/slices/S01/S01-UAT-RESULT.md';
-  const uatType = 'artifact-driven';
+  const uatType = 'live-runtime';
   const inlinedContext = '<!-- no context -->';
 
   let promptResult: string | undefined;
@@ -247,12 +247,20 @@ async function main(): Promise<void> {
     `prompt contains uatResultPath value after substitution`,
   );
   assertTrue(
+    promptResult?.includes(`Detected UAT mode:** \`${uatType}\``) ?? false,
+    `prompt contains detected dynamic uatType value "${uatType}" after substitution`,
+  );
+  assertTrue(
+    promptResult?.includes(`uatType: ${uatType}`) ?? false,
+    `prompt contains dynamic uatType frontmatter value "${uatType}" after substitution`,
+  );
+  assertTrue(
     !/\{\{[^}]+\}\}/.test(promptResult ?? ''),
     'no unreplaced {{...}} tokens remain after variable substitution',
   );
   assertTrue(
-    /artifact|execute|run/i.test(promptResult ?? ''),
-    'prompt contains artifact-driven execution language (artifact/execute/run)',
+    /browser|runtime|execute|run/i.test(promptResult ?? ''),
+    'prompt contains runtime execution language (browser/runtime/execute/run)',
   );
   assertTrue(
     !/surfaced for human review/i.test(promptResult ?? ''),
@@ -334,7 +342,7 @@ async function main(): Promise<void> {
         ].join('\n'),
       );
 
-      // human-experience UAT — should not dispatch
+      // human-experience UAT still dispatches, but auto-mode later pauses for manual review
       writeSliceFile(base, 'M001', 'S01', 'UAT', makeUatContent('human-experience'));
 
       const state = {
@@ -351,8 +359,8 @@ async function main(): Promise<void> {
       const result = await checkNeedsRunUat(base, 'M001', state as any, { uat_dispatch: true } as any);
       assertEq(
         result,
-        null,
-        'human-experience UAT is skipped — auto-mode only dispatches artifact-driven UATs',
+        { sliceId: 'S01', uatType: 'human-experience' },
+        'human-experience UAT dispatches so auto-mode can pause for manual review',
       );
     } finally {
       cleanup(base);

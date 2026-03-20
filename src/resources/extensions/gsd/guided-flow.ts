@@ -23,6 +23,7 @@ import {
 } from "./paths.js";
 import { join } from "node:path";
 import { readFileSync, existsSync, mkdirSync, readdirSync, rmSync, unlinkSync } from "node:fs";
+import { readSessionLockData, isSessionLockProcessAlive } from "./session-lock.js";
 import { nativeIsRepo, nativeInit } from "./native-git-bridge.js";
 import { ensureGitignore, ensurePreferences, untrackRuntimeFiles } from "./gitignore.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
@@ -33,6 +34,7 @@ import { showConfirm } from "../shared/mod.js";
 import { debugLog } from "./debug-logger.js";
 import { findMilestoneIds, nextMilestoneId } from "./milestone-ids.js";
 import { parkMilestone, discardMilestone } from "./milestone-actions.js";
+import { resolveModelWithFallbacksForUnit } from "./preferences-models.js";
 
 // ─── Re-exports (preserve public API for existing importers) ────────────────
 export {
@@ -189,9 +191,41 @@ type UIContext = ExtensionContext;
 /**
  * Read GSD-WORKFLOW.md and dispatch it to the LLM with a contextual note.
  * This is the only way the wizard triggers work — everything else is the LLM's job.
+ *
+ * When a unitType is provided, resolves the user's model preference for that
+ * phase (e.g., models.planning → "plan-milestone") and applies it before
+ * dispatching. This ensures guided-flow dispatches respect the same
+ * per-phase model preferences that auto-mode uses.
  */
-function dispatchWorkflow(pi: ExtensionAPI, note: string, customType = "gsd-run"): void {
-  const workflowPath = process.env.GSD_WORKFLOW_PATH ?? join(process.env.HOME ?? "~", ".pi", "GSD-WORKFLOW.md");
+async function dispatchWorkflow(
+  pi: ExtensionAPI,
+  note: string,
+  customType = "gsd-run",
+  ctx?: ExtensionContext,
+  unitType?: string,
+): Promise<void> {
+  // Apply model preference for this unit type (if configured)
+  if (ctx && unitType) {
+    const modelConfig = resolveModelWithFallbacksForUnit(unitType);
+    if (modelConfig) {
+      const availableModels = ctx.modelRegistry.getAvailable();
+      const modelsToTry = [modelConfig.primary, ...modelConfig.fallbacks];
+
+      for (const modelId of modelsToTry) {
+        // Resolve model from available models (same logic as auto-model-selection)
+        const model = resolveAvailableModel(modelId, availableModels, ctx.model?.provider);
+        if (!model) continue;
+
+        const ok = await pi.setModel(model, { persist: false });
+        if (ok) {
+          debugLog("guided-flow-model-applied", { unitType, model: `${model.provider}/${model.id}` });
+          break;
+        }
+      }
+    }
+  }
+
+  const workflowPath = process.env.GSD_WORKFLOW_PATH ?? join(process.env.HOME ?? "~", ".gsd", "agent", "GSD-WORKFLOW.md");
   const workflow = readFileSync(workflowPath, "utf-8");
 
   pi.sendMessage(
@@ -202,6 +236,45 @@ function dispatchWorkflow(pi: ExtensionAPI, note: string, customType = "gsd-run"
     },
     { triggerTurn: true },
   );
+}
+
+/**
+ * Resolve a model ID string to a model object from available models.
+ * Handles "provider/model" and bare ID formats.
+ */
+function resolveAvailableModel<T extends { id: string; provider: string }>(
+  modelId: string,
+  availableModels: T[],
+  currentProvider: string | undefined,
+): T | undefined {
+  const slashIdx = modelId.indexOf("/");
+
+  if (slashIdx !== -1) {
+    const maybeProvider = modelId.substring(0, slashIdx);
+    const id = modelId.substring(slashIdx + 1);
+
+    const knownProviders = new Set(availableModels.map(m => m.provider.toLowerCase()));
+    if (knownProviders.has(maybeProvider.toLowerCase())) {
+      const match = availableModels.find(
+        m => m.provider.toLowerCase() === maybeProvider.toLowerCase()
+          && m.id.toLowerCase() === id.toLowerCase(),
+      );
+      if (match) return match;
+    }
+
+    // Try matching the full string as a model ID (OpenRouter-style)
+    const lower = modelId.toLowerCase();
+    return availableModels.find(
+      m => m.id.toLowerCase() === lower
+        || `${m.provider}/${m.id}`.toLowerCase() === lower,
+    );
+  }
+
+  // Bare ID — prefer current provider, then first available
+  const exactProviderMatch = availableModels.find(
+    m => m.id === modelId && m.provider === currentProvider,
+  );
+  return exactProviderMatch ?? availableModels.find(m => m.id === modelId);
 }
 
 /**
@@ -300,8 +373,8 @@ export async function showHeadlessMilestoneCreation(
   // Set pending auto start (auto-mode triggers on "Milestone X ready." via checkAutoStartAfterDiscuss)
   pendingAutoStart = { ctx, pi, basePath, milestoneId: nextId };
 
-  // Dispatch
-  dispatchWorkflow(pi, prompt);
+  // Dispatch — headless milestone creation is a planning activity
+  await dispatchWorkflow(pi, prompt, "gsd-run", ctx, "plan-milestone");
 }
 
 
@@ -466,21 +539,21 @@ export async function showDiscuss(
         ? `${basePrompt}\n\n## Prior Discussion (Draft Seed)\n\n${draftContent}`
         : basePrompt;
       pendingAutoStart = { ctx, pi, basePath, milestoneId: mid, step: false };
-      dispatchWorkflow(pi, seed, "gsd-discuss");
+      await dispatchWorkflow(pi, seed, "gsd-discuss", ctx, "plan-milestone");
     } else if (choice === "discuss_fresh") {
       const discussMilestoneTemplates = inlineTemplate("context", "Context");
       const structuredQuestionsAvailable = pi.getActiveTools().includes("ask_user_questions") ? "true" : "false";
       pendingAutoStart = { ctx, pi, basePath, milestoneId: mid, step: false };
-      dispatchWorkflow(pi, loadPrompt("guided-discuss-milestone", {
+      await dispatchWorkflow(pi, loadPrompt("guided-discuss-milestone", {
         milestoneId: mid, milestoneTitle, inlinedTemplates: discussMilestoneTemplates, structuredQuestionsAvailable,
         commitInstruction: buildDocsCommitInstruction(`docs(${mid}): milestone context from discuss`),
-      }), "gsd-discuss");
+      }), "gsd-discuss", ctx, "plan-milestone");
     } else if (choice === "skip_milestone") {
       const milestoneIds = findMilestoneIds(basePath);
       const uniqueMilestoneIds = !!loadEffectiveGSDPreferences()?.preferences?.unique_milestone_ids;
       const nextId = nextMilestoneId(milestoneIds, uniqueMilestoneIds);
       pendingAutoStart = { ctx, pi, basePath, milestoneId: nextId, step: false };
-      dispatchWorkflow(pi, buildDiscussPrompt(nextId, `New milestone ${nextId}.`, basePath));
+      await dispatchWorkflow(pi, buildDiscussPrompt(nextId, `New milestone ${nextId}.`, basePath), "gsd-run", ctx, "plan-milestone");
     }
     return;
   }
@@ -516,8 +589,13 @@ export async function showDiscuss(
     // If all pending slices are discussed, notify and exit instead of looping
     const allDiscussed = pendingSlices.every(s => discussedMap.get(s.id));
     if (allDiscussed) {
+      const lockData = readSessionLockData(basePath);
+      const remoteAutoRunning = lockData && lockData.pid !== process.pid && isSessionLockProcessAlive(lockData);
+      const nextStep = remoteAutoRunning
+        ? "Auto-mode is already running — use /gsd status to check progress."
+        : "Run /gsd to start planning.";
       ctx.ui.notify(
-        `All ${pendingSlices.length} slices discussed. Run /gsd to start planning.`,
+        `All ${pendingSlices.length} slices discussed. ${nextStep}`,
         "info",
       );
       return;
@@ -574,7 +652,7 @@ export async function showDiscuss(
     }
 
     const prompt = await buildDiscussSlicePrompt(mid, chosen.id, chosen.title, basePath, { rediscuss: isRediscuss });
-    dispatchWorkflow(pi, prompt, "gsd-discuss");
+    await dispatchWorkflow(pi, prompt, "gsd-discuss", ctx, "plan-slice");
 
     // Wait for the discuss session to finish, then loop back to the picker
     await ctx.waitForIdle();
@@ -716,10 +794,10 @@ async function handleMilestoneActions(
     const uniqueMilestoneIds = !!loadEffectiveGSDPreferences()?.preferences?.unique_milestone_ids;
     const nextId = nextMilestoneId(milestoneIds, uniqueMilestoneIds);
     pendingAutoStart = { ctx, pi, basePath, milestoneId: nextId, step: stepMode };
-    dispatchWorkflow(pi, buildDiscussPrompt(nextId,
+    await dispatchWorkflow(pi, buildDiscussPrompt(nextId,
       `New milestone ${nextId}.`,
       basePath
-    ));
+    ), "gsd-run", ctx, "plan-milestone");
     return true;
   }
 
@@ -788,21 +866,34 @@ export async function showSmartEntry(
   // ── Self-heal stale runtime records from crashed auto-mode sessions ──
   selfHealRuntimeRecords(basePath, ctx);
 
-  // Check for crash from previous auto-mode session
+  // Check for crash from previous auto-mode session.
+  // Skip if the lock was written by the current process — acquireSessionLock()
+  // writes to the same file, so we'd always false-positive (#1398).
   const crashLock = readCrashLock(basePath);
-  if (crashLock) {
+  if (crashLock && crashLock.pid !== process.pid) {
     clearLock(basePath);
-    const resume = await showNextAction(ctx, {
-      title: "GSD — Interrupted Session Detected",
-      summary: [formatCrashInfo(crashLock)],
-      actions: [
-        { id: "resume", label: "Resume with /gsd auto", description: "Pick up where it left off", recommended: true },
-        { id: "continue", label: "Continue manually", description: "Open the wizard as normal" },
-      ],
-    });
-    if (resume === "resume") {
-      await startAuto(ctx, pi, basePath, false);
-      return;
+
+    // Bootstrap crash with zero completed units = no work was lost.
+    // Auto-discard instead of prompting the user — this commonly happens
+    // when the user exits during init wizard or discuss phase before any
+    // real auto-mode work begins.
+    const isBootstrapCrash = crashLock.unitType === "starting"
+      && crashLock.unitId === "bootstrap"
+      && crashLock.completedUnits === 0;
+
+    if (!isBootstrapCrash) {
+      const resume = await showNextAction(ctx, {
+        title: "GSD — Interrupted Session Detected",
+        summary: [formatCrashInfo(crashLock)],
+        actions: [
+          { id: "resume", label: "Resume with /gsd auto", description: "Pick up where it left off", recommended: true },
+          { id: "continue", label: "Continue manually", description: "Open the wizard as normal" },
+        ],
+      });
+      if (resume === "resume") {
+        await startAuto(ctx, pi, basePath, false);
+        return;
+      }
     }
   }
 
@@ -847,10 +938,10 @@ export async function showSmartEntry(
     if (isFirst) {
       // First ever — skip wizard, just ask directly
       pendingAutoStart = { ctx, pi, basePath, milestoneId: nextId, step: stepMode };
-      dispatchWorkflow(pi, buildDiscussPrompt(nextId,
+      await dispatchWorkflow(pi, buildDiscussPrompt(nextId,
         `New project, milestone ${nextId}. Do NOT read or explore .gsd/ — it's empty scaffolding.`,
         basePath
-      ));
+      ), "gsd-run", ctx, "plan-milestone");
     } else {
       const choice = await showNextAction(ctx, {
         title: "GSD — Get Shit Done",
@@ -868,10 +959,10 @@ export async function showSmartEntry(
 
       if (choice === "new_milestone") {
         pendingAutoStart = { ctx, pi, basePath, milestoneId: nextId, step: stepMode };
-        dispatchWorkflow(pi, buildDiscussPrompt(nextId,
+        await dispatchWorkflow(pi, buildDiscussPrompt(nextId,
           `New milestone ${nextId}.`,
           basePath
-        ));
+        ), "gsd-run", ctx, "plan-milestone");
       }
     }
     return;
@@ -907,10 +998,10 @@ export async function showSmartEntry(
       const nextId = nextMilestoneId(milestoneIds, uniqueMilestoneIds);
 
       pendingAutoStart = { ctx, pi, basePath, milestoneId: nextId, step: stepMode };
-      dispatchWorkflow(pi, buildDiscussPrompt(nextId,
+      await dispatchWorkflow(pi, buildDiscussPrompt(nextId,
         `New milestone ${nextId}.`,
         basePath
-      ));
+      ), "gsd-run", ctx, "plan-milestone");
     } else if (choice === "status") {
       const { fireStatusViaCommand } = await import("./commands.js");
       await fireStatusViaCommand(ctx);
@@ -958,24 +1049,24 @@ export async function showSmartEntry(
         ? `${basePrompt}\n\n## Prior Discussion (Draft Seed)\n\n${draftContent}`
         : basePrompt;
       pendingAutoStart = { ctx, pi, basePath, milestoneId, step: stepMode };
-      dispatchWorkflow(pi, seed, "gsd-discuss");
+      await dispatchWorkflow(pi, seed, "gsd-discuss", ctx, "plan-milestone");
     } else if (choice === "discuss_fresh") {
       const discussMilestoneTemplates = inlineTemplate("context", "Context");
       const structuredQuestionsAvailable = pi.getActiveTools().includes("ask_user_questions") ? "true" : "false";
       pendingAutoStart = { ctx, pi, basePath, milestoneId, step: stepMode };
-      dispatchWorkflow(pi, loadPrompt("guided-discuss-milestone", {
+      await dispatchWorkflow(pi, loadPrompt("guided-discuss-milestone", {
         milestoneId, milestoneTitle, inlinedTemplates: discussMilestoneTemplates, structuredQuestionsAvailable,
         commitInstruction: buildDocsCommitInstruction(`docs(${milestoneId}): milestone context from discuss`),
-      }), "gsd-discuss");
+      }), "gsd-discuss", ctx, "plan-milestone");
     } else if (choice === "skip_milestone") {
       const milestoneIds = findMilestoneIds(basePath);
       const uniqueMilestoneIds = !!loadEffectiveGSDPreferences()?.preferences?.unique_milestone_ids;
       const nextId = nextMilestoneId(milestoneIds, uniqueMilestoneIds);
       pendingAutoStart = { ctx, pi, basePath, milestoneId: nextId, step: stepMode };
-      dispatchWorkflow(pi, buildDiscussPrompt(nextId,
+      await dispatchWorkflow(pi, buildDiscussPrompt(nextId,
         `New milestone ${nextId}.`,
         basePath
-      ));
+      ), "gsd-run", ctx, "plan-milestone");
     }
     return;
   }
@@ -1032,25 +1123,25 @@ export async function showSmartEntry(
           inlineTemplate("secrets-manifest", "Secrets Manifest"),
         ].join("\n\n---\n\n");
         const secretsOutputPath = relMilestoneFile(basePath, milestoneId, "SECRETS");
-        dispatchWorkflow(pi, loadPrompt("guided-plan-milestone", {
+        await dispatchWorkflow(pi, loadPrompt("guided-plan-milestone", {
           milestoneId, milestoneTitle, secretsOutputPath, inlinedTemplates: planMilestoneTemplates,
-        }));
+        }), "gsd-run", ctx, "plan-milestone");
       } else if (choice === "discuss") {
         const discussMilestoneTemplates = inlineTemplate("context", "Context");
         const structuredQuestionsAvailable = pi.getActiveTools().includes("ask_user_questions") ? "true" : "false";
-        dispatchWorkflow(pi, loadPrompt("guided-discuss-milestone", {
+        await dispatchWorkflow(pi, loadPrompt("guided-discuss-milestone", {
           milestoneId, milestoneTitle, inlinedTemplates: discussMilestoneTemplates, structuredQuestionsAvailable,
           commitInstruction: buildDocsCommitInstruction(`docs(${milestoneId}): milestone context from discuss`),
-        }));
+        }), "gsd-run", ctx, "plan-milestone");
       } else if (choice === "skip_milestone") {
         const milestoneIds = findMilestoneIds(basePath);
         const uniqueMilestoneIds = !!loadEffectiveGSDPreferences()?.preferences?.unique_milestone_ids;
         const nextId = nextMilestoneId(milestoneIds, uniqueMilestoneIds);
         pendingAutoStart = { ctx, pi, basePath, milestoneId: nextId, step: stepMode };
-        dispatchWorkflow(pi, buildDiscussPrompt(nextId,
+        await dispatchWorkflow(pi, buildDiscussPrompt(nextId,
           `New milestone ${nextId}.`,
           basePath
-        ));
+        ), "gsd-run", ctx, "plan-milestone");
       } else if (choice === "discard_milestone") {
         const confirmed = await showConfirm(ctx, {
           title: "Discard milestone?",
@@ -1162,16 +1253,16 @@ export async function showSmartEntry(
         inlineTemplate("plan", "Slice Plan"),
         inlineTemplate("task-plan", "Task Plan"),
       ].join("\n\n---\n\n");
-      dispatchWorkflow(pi, loadPrompt("guided-plan-slice", {
+      await dispatchWorkflow(pi, loadPrompt("guided-plan-slice", {
         milestoneId, sliceId, sliceTitle, inlinedTemplates: planSliceTemplates,
-      }));
+      }), "gsd-run", ctx, "plan-slice");
     } else if (choice === "discuss") {
-      dispatchWorkflow(pi, await buildDiscussSlicePrompt(milestoneId, sliceId, sliceTitle, basePath, { rediscuss: hasContext }));
+      await dispatchWorkflow(pi, await buildDiscussSlicePrompt(milestoneId, sliceId, sliceTitle, basePath, { rediscuss: hasContext }), "gsd-run", ctx, "plan-slice");
     } else if (choice === "research") {
       const researchTemplates = inlineTemplate("research", "Research");
-      dispatchWorkflow(pi, loadPrompt("guided-research-slice", {
+      await dispatchWorkflow(pi, loadPrompt("guided-research-slice", {
         milestoneId, sliceId, sliceTitle, inlinedTemplates: researchTemplates,
-      }));
+      }), "gsd-run", ctx, "research-slice");
     } else if (choice === "status") {
       const { fireStatusViaCommand } = await import("./commands.js");
       await fireStatusViaCommand(ctx);
@@ -1213,9 +1304,9 @@ export async function showSmartEntry(
         inlineTemplate("slice-summary", "Slice Summary"),
         inlineTemplate("uat", "UAT"),
       ].join("\n\n---\n\n");
-      dispatchWorkflow(pi, loadPrompt("guided-complete-slice", {
+      await dispatchWorkflow(pi, loadPrompt("guided-complete-slice", {
         workingDirectory: basePath, milestoneId, sliceId, sliceTitle, inlinedTemplates: completeSliceTemplates,
-      }));
+      }), "gsd-run", ctx, "complete-slice");
     } else if (choice === "status") {
       const { fireStatusViaCommand } = await import("./commands.js");
       await fireStatusViaCommand(ctx);
@@ -1278,14 +1369,14 @@ export async function showSmartEntry(
 
     if (choice === "execute") {
       if (hasInterrupted) {
-        dispatchWorkflow(pi, loadPrompt("guided-resume-task", {
+        await dispatchWorkflow(pi, loadPrompt("guided-resume-task", {
           milestoneId, sliceId,
-        }));
+        }), "gsd-run", ctx, "execute-task");
       } else {
         const executeTaskTemplates = inlineTemplate("task-summary", "Task Summary");
-        dispatchWorkflow(pi, loadPrompt("guided-execute-task", {
+        await dispatchWorkflow(pi, loadPrompt("guided-execute-task", {
           milestoneId, sliceId, taskId, taskTitle, inlinedTemplates: executeTaskTemplates,
-        }));
+        }), "gsd-run", ctx, "execute-task");
       }
     } else if (choice === "status") {
       const { fireStatusViaCommand } = await import("./commands.js");

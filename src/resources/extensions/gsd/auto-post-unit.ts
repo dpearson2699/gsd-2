@@ -11,7 +11,7 @@
  * Extracted from handleAgentEnd() in auto.ts.
  */
 
-import type { ExtensionContext, ExtensionCommandContext, ExtensionAPI } from "@gsd/pi-coding-agent";
+import type { ExtensionContext, ExtensionAPI } from "@gsd/pi-coding-agent";
 import { deriveState } from "./state.js";
 import { loadFile, parseSummary, resolveAllOverrides } from "./files.js";
 import { loadPrompt } from "./prompt-loader.js";
@@ -19,7 +19,6 @@ import {
   resolveSliceFile,
   resolveTaskFile,
   resolveMilestoneFile,
-  gsdRoot,
 } from "./paths.js";
 import { invalidateAllCaches } from "./cache.js";
 import { closeoutUnit, type CloseoutOptions } from "./auto-unit-closeout.js";
@@ -29,30 +28,22 @@ import {
 } from "./worktree.js";
 import {
   verifyExpectedArtifact,
-  persistCompletedKey,
-  removePersistedKey,
 } from "./auto-recovery.js";
 import { writeUnitRuntimeRecord, clearUnitRuntimeRecord } from "./unit-runtime.js";
-import { resolveAutoSupervisorConfig, loadEffectiveGSDPreferences } from "./preferences.js";
 import { runGSDDoctor, rebuildState, summarizeDoctorIssues } from "./doctor.js";
-import { COMPLETION_TRANSITION_CODES } from "./doctor-types.js";
 import { recordHealthSnapshot, checkHealEscalation } from "./doctor-proactive.js";
-import { resetRewriteCircuitBreaker } from "./auto-dispatch.js";
+import { syncStateToProjectRoot } from "./auto-worktree-sync.js";
 import { isDbAvailable } from "./gsd-db.js";
 import { consumeSignal } from "./session-status-io.js";
 import {
   checkPostUnitHooks,
-  getActiveHook,
-  resetHookState,
   isRetryPending,
   consumeRetryTrigger,
   persistHookState,
 } from "./post-unit-hooks.js";
-import { hasPendingCaptures, loadPendingCaptures, countPendingCaptures } from "./captures.js";
-import { writeLock } from "./crash-recovery.js";
+import { hasPendingCaptures, loadPendingCaptures } from "./captures.js";
 import { debugLog } from "./debug-logger.js";
 import type { AutoSession } from "./auto/session.js";
-import type { WidgetStateAccessors, AutoDashboardData } from "./auto-dashboard.js";
 import {
   updateProgressWidget as _updateProgressWidget,
   updateSliceProgressCache,
@@ -60,31 +51,15 @@ import {
   hideFooter,
 } from "./auto-dashboard.js";
 import { join } from "node:path";
-import { STATE_REBUILD_MIN_INTERVAL_MS } from "./auto-constants.js";
-import { parseUnitId } from "./unit-id.js";
 
-/**
- * Initialize a unit dispatch: stamp the current time, set `s.currentUnit`,
- * and persist the initial runtime record. Returns `startedAt` for callers
- * that need the timestamp.
- */
-function dispatchUnit(
-  s: AutoSession,
-  basePath: string,
-  unitType: string,
-  unitId: string,
-): number {
-  const startedAt = Date.now();
-  s.currentUnit = { type: unitType, id: unitId, startedAt };
-  writeUnitRuntimeRecord(basePath, unitType, unitId, startedAt, {
-    phase: "dispatched",
-    wrapupWarningSent: false,
-    timeoutAt: null,
-    lastProgressAt: startedAt,
-    progressCount: 0,
-    lastProgressKind: "dispatch",
-  });
-  return startedAt;
+/** Throttle STATE.md rebuilds — at most once per 30 seconds */
+const STATE_REBUILD_MIN_INTERVAL_MS = 30_000;
+
+export interface PreVerificationOpts {
+  skipSettleDelay?: boolean;
+  skipDoctor?: boolean;
+  skipStateRebuild?: boolean;
+  skipWorktreeSync?: boolean;
 }
 
 export interface PostUnitContext {
@@ -104,7 +79,7 @@ export interface PostUnitContext {
  *
  * Returns "dispatched" if a signal caused stop/pause, "continue" to proceed.
  */
-export async function postUnitPreVerification(pctx: PostUnitContext): Promise<"dispatched" | "continue"> {
+export async function postUnitPreVerification(pctx: PostUnitContext, opts?: PreVerificationOpts): Promise<"dispatched" | "continue"> {
   const { s, ctx, pi, buildSnapshotOpts, stopAuto, pauseAuto } = pctx;
 
   // ── Parallel worker signal check ──
@@ -126,8 +101,10 @@ export async function postUnitPreVerification(pctx: PostUnitContext): Promise<"d
   // Invalidate all caches
   invalidateAllCaches();
 
-  // Small delay to let files settle
-  await new Promise(r => setTimeout(r, 500));
+  // Small delay to let files settle (skipped for sidecars where latency matters more)
+  if (!opts?.skipSettleDelay) {
+    await new Promise(r => setTimeout(r, 100));
+  }
 
   // Auto-commit
   if (s.currentUnit) {
@@ -135,7 +112,8 @@ export async function postUnitPreVerification(pctx: PostUnitContext): Promise<"d
       let taskContext: TaskCommitContext | undefined;
 
       if (s.currentUnit.type === "execute-task") {
-        const { milestone: mid, slice: sid, task: tid } = parseUnitId(s.currentUnit.id);
+        const parts = s.currentUnit.id.split("/");
+        const [mid, sid, tid] = parts;
         if (mid && sid && tid) {
           const summaryPath = resolveTaskFile(s.basePath, mid, sid, tid, "SUMMARY");
           if (summaryPath) {
@@ -143,15 +121,25 @@ export async function postUnitPreVerification(pctx: PostUnitContext): Promise<"d
               const summaryContent = await loadFile(summaryPath);
               if (summaryContent) {
                 const summary = parseSummary(summaryContent);
+                // Look up GitHub issue number for commit linking
+                let ghIssueNumber: number | undefined;
+                try {
+                  const { getTaskIssueNumberForCommit } = await import("../github-sync/sync.js");
+                  ghIssueNumber = getTaskIssueNumberForCommit(s.basePath, mid, sid, tid) ?? undefined;
+                } catch {
+                  // GitHub sync not available — skip
+                }
+
                 taskContext = {
                   taskId: `${sid}/${tid}`,
                   taskTitle: summary.title?.replace(/^T\d+:\s*/, "") || tid,
                   oneLiner: summary.oneLiner || undefined,
                   keyFiles: summary.frontmatter.key_files?.filter(f => !f.includes("{{")) || undefined,
+                  issueNumber: ghIssueNumber,
                 };
               }
-            } catch {
-              // Non-fatal
+            } catch (e) {
+              debugLog("postUnit", { phase: "task-summary-parse", error: String(e) });
             }
           }
         }
@@ -161,14 +149,22 @@ export async function postUnitPreVerification(pctx: PostUnitContext): Promise<"d
       if (commitMsg) {
         ctx.ui.notify(`Committed: ${commitMsg.split("\n")[0]}`, "info");
       }
-    } catch {
-      // Non-fatal
+    } catch (e) {
+      debugLog("postUnit", { phase: "auto-commit", error: String(e) });
     }
 
-    // Doctor: fix mechanical bookkeeping
+    // GitHub sync (non-blocking, opt-in)
     try {
-      const { milestone, slice } = parseUnitId(s.currentUnit.id);
-      const doctorScope = slice ? `${milestone}/${slice}` : milestone;
+      const { runGitHubSync } = await import("../github-sync/sync.js");
+      await runGitHubSync(s.basePath, s.currentUnit.type, s.currentUnit.id);
+    } catch (e) {
+      debugLog("postUnit", { phase: "github-sync", error: String(e) });
+    }
+
+    // Doctor: fix mechanical bookkeeping (skipped for lightweight sidecars)
+    if (!opts?.skipDoctor) try {
+      const scopeParts = s.currentUnit.id.split("/").slice(0, 2);
+      const doctorScope = scopeParts.join("/");
       const sliceTerminalUnits = new Set(["complete-slice", "run-uat"]);
       const effectiveFixLevel = sliceTerminalUnits.has(s.currentUnit.type) ? "all" as const : "task" as const;
       const report = await runGSDDoctor(s.basePath, { fix: true, scope: doctorScope, fixLevel: effectiveFixLevel });
@@ -176,17 +172,13 @@ export async function postUnitPreVerification(pctx: PostUnitContext): Promise<"d
         ctx.ui.notify(`Post-hook: applied ${report.fixesApplied.length} fix(es).`, "info");
       }
 
-      // Proactive health tracking — exclude completion-transition codes at task level
-      // since they are expected after the last task and resolved by complete-slice
-      const issuesForHealth = effectiveFixLevel === "task"
-        ? report.issues.filter(i => !COMPLETION_TRANSITION_CODES.has(i.code))
-        : report.issues;
-      const summary = summarizeDoctorIssues(issuesForHealth);
+      // Proactive health tracking
+      const summary = summarizeDoctorIssues(report.issues);
       recordHealthSnapshot(summary.errors, summary.warnings, report.fixesApplied.length);
 
       // Check if we should escalate to LLM-assisted heal
       if (summary.errors > 0) {
-        const unresolvedErrors = issuesForHealth
+        const unresolvedErrors = report.issues
           .filter(i => i.severity === "error" && !i.fixable)
           .map(i => ({ code: i.code, message: i.message, unitId: i.unitId }));
         const escalation = checkHealEscalation(summary.errors, unresolvedErrors);
@@ -202,46 +194,69 @@ export async function postUnitPreVerification(pctx: PostUnitContext): Promise<"d
             const reportText = formatDoctorReport(report, { scope: doctorScope, includeWarnings: true });
             const structuredIssues = formatDoctorIssuesForPrompt(actionable);
             dispatchDoctorHeal(pi, doctorScope, reportText, structuredIssues);
-          } catch {
-            // Non-fatal
+            return "dispatched";
+          } catch (e) {
+            debugLog("postUnit", { phase: "doctor-heal-dispatch", error: String(e) });
           }
         }
       }
-    } catch {
-      // Non-fatal
+    } catch (e) {
+      debugLog("postUnit", { phase: "doctor", error: String(e) });
     }
 
-    // Throttled STATE.md rebuild
-    const now = Date.now();
-    if (now - s.lastStateRebuildAt >= STATE_REBUILD_MIN_INTERVAL_MS) {
-      try {
-        await rebuildState(s.basePath);
-        s.lastStateRebuildAt = now;
-        autoCommitCurrentBranch(s.basePath, "state-rebuild", s.currentUnit.id);
-      } catch {
-        // Non-fatal
+    // Throttled STATE.md rebuild (skipped for lightweight sidecars)
+    if (!opts?.skipStateRebuild) {
+      const now = Date.now();
+      if (now - s.lastStateRebuildAt >= STATE_REBUILD_MIN_INTERVAL_MS) {
+        try {
+          await rebuildState(s.basePath);
+          s.lastStateRebuildAt = now;
+          autoCommitCurrentBranch(s.basePath, "state-rebuild", s.currentUnit.id);
+        } catch (e) {
+          debugLog("postUnit", { phase: "state-rebuild", error: String(e) });
+        }
       }
     }
 
-    // Prune dead bg-shell processes and kill non-persistent live ones.
-    // Without killing live processes between units, dev servers spawned during
-    // one task keep ports bound, causing conflicts in subsequent tasks (#1209).
+    // Prune dead bg-shell processes
     try {
-      const { pruneDeadProcesses, killSessionProcesses } = await import("../bg-shell/process-manager.js");
+      const { pruneDeadProcesses } = await import("../bg-shell/process-manager.js");
       pruneDeadProcesses();
-      killSessionProcesses();
-    } catch {
-      // Non-fatal
+    } catch (e) {
+      debugLog("postUnit", { phase: "prune-bg-shell", error: String(e) });
+    }
+
+    // Sync worktree state back to project root (skipped for lightweight sidecars)
+    if (!opts?.skipWorktreeSync && s.originalBasePath && s.originalBasePath !== s.basePath) {
+      try {
+        syncStateToProjectRoot(s.basePath, s.originalBasePath, s.currentMilestoneId);
+      } catch (e) {
+        debugLog("postUnit", { phase: "worktree-sync", error: String(e) });
+      }
     }
 
     // Rewrite-docs completion
     if (s.currentUnit.type === "rewrite-docs") {
       try {
         await resolveAllOverrides(s.basePath);
-        resetRewriteCircuitBreaker();
+        s.rewriteAttemptCount = 0;
         ctx.ui.notify("Override(s) resolved — rewrite-docs completed.", "info");
-      } catch {
-        // Non-fatal
+      } catch (e) {
+        debugLog("postUnit", { phase: "rewrite-docs-resolve", error: String(e) });
+      }
+    }
+
+    // Reactive state cleanup on slice completion
+    if (s.currentUnit.type === "complete-slice") {
+      try {
+        const parts = s.currentUnit.id.split("/");
+        const [mid, sid] = parts;
+        if (mid && sid) {
+          const { clearReactiveState } = await import("./reactive-graph.js");
+          clearReactiveState(s.basePath, mid, sid);
+        }
+      } catch (e) {
+        debugLog("postUnit", { phase: "reactive-state-cleanup", error: String(e) });
       }
     }
 
@@ -286,21 +301,16 @@ export async function postUnitPreVerification(pctx: PostUnitContext): Promise<"d
       }
     }
 
-    // Artifact verification and completion persistence
+    // Artifact verification
     let triggerArtifactVerified = false;
     if (!s.currentUnit.type.startsWith("hook/")) {
       try {
         triggerArtifactVerified = verifyExpectedArtifact(s.currentUnit.type, s.currentUnit.id, s.basePath);
         if (triggerArtifactVerified) {
-          const completionKey = `${s.currentUnit.type}/${s.currentUnit.id}`;
-          if (!s.completedKeySet.has(completionKey)) {
-            persistCompletedKey(s.basePath, completionKey);
-            s.completedKeySet.add(completionKey);
-          }
           invalidateAllCaches();
         }
-      } catch {
-        // Non-fatal
+      } catch (e) {
+        debugLog("postUnit", { phase: "artifact-verify", error: String(e) });
       }
     } else {
       // Hook unit completed — finalize its runtime record
@@ -311,8 +321,8 @@ export async function postUnitPreVerification(pctx: PostUnitContext): Promise<"d
           lastProgressKind: "hook-completed",
         });
         clearUnitRuntimeRecord(s.basePath, s.currentUnit.type, s.currentUnit.id);
-      } catch {
-        // Non-fatal
+      } catch (e) {
+        debugLog("postUnit", { phase: "hook-finalize", error: String(e) });
       }
     }
   }
@@ -324,13 +334,15 @@ export async function postUnitPreVerification(pctx: PostUnitContext): Promise<"d
  * Post-verification processing: DB dual-write, post-unit hooks, triage
  * capture dispatch, quick-task dispatch.
  *
+ * Sidecar work (hooks, triage, quick-tasks) is enqueued on `s.sidecarQueue`
+ * for the main loop to drain via `runUnit()`.
+ *
  * Returns:
- * - "dispatched" — a hook/triage/quick-task was dispatched (sendMessage sent)
- * - "continue" — proceed to normal dispatchNextUnit
+ * - "continue" — proceed to sidecar drain / normal dispatch
  * - "step-wizard" — step mode, show wizard instead
  * - "stopped" — stopAuto was called
  */
-export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"dispatched" | "continue" | "step-wizard" | "stopped"> {
+export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"continue" | "step-wizard" | "stopped"> {
   const { s, ctx, pi, buildSnapshotOpts, lockBase, stopAuto, pauseAuto, updateProgressWidget } = pctx;
 
   // ── DB dual-write ──
@@ -343,45 +355,6 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
     }
   }
 
-  // ── Mechanical completion (ADR-003) ──
-  // After task execution, attempt mechanical slice and milestone completion
-  // instead of dispatching LLM sessions for complete-slice / validate-milestone.
-  if (s.currentUnit?.type === "execute-task" && !s.stepMode) {
-    try {
-      const { milestone: mid, slice: sid } = parseUnitId(s.currentUnit.id);
-      if (mid && sid) {
-        const state = await deriveState(s.basePath);
-        if (state.phase === "summarizing" && state.activeSlice?.id === sid) {
-          const { mechanicalSliceCompletion } = await import("./mechanical-completion.js");
-          const ok = await mechanicalSliceCompletion(s.basePath, mid, sid);
-          if (ok) {
-            invalidateAllCaches();
-            autoCommitCurrentBranch(s.basePath, "mechanical-completion", `${mid}/${sid}`);
-            ctx.ui.notify(`Mechanical completion: ${sid} summary + roadmap updated.`, "info");
-
-            // Re-derive state — check if milestone is now ready for validation
-            invalidateAllCaches();
-            const postSliceState = await deriveState(s.basePath);
-            if (postSliceState.phase === "validating-milestone" || postSliceState.phase === "completing-milestone") {
-              const { aggregateMilestoneVerification, generateMilestoneSummary } = await import("./mechanical-completion.js");
-              const validation = await aggregateMilestoneVerification(s.basePath, mid);
-              if (validation.verdict !== "failed") {
-                await generateMilestoneSummary(s.basePath, mid);
-                invalidateAllCaches();
-                autoCommitCurrentBranch(s.basePath, "mechanical-milestone-completion", mid);
-                ctx.ui.notify(`Mechanical completion: ${mid} validation + summary written.`, "info");
-              }
-            }
-          }
-          // If !ok, summarizing phase persists → dispatch rule fires as LLM fallback
-        }
-      }
-    } catch (err) {
-      process.stderr.write(`gsd-mechanical: completion failed: ${(err as Error).message}\n`);
-      // Non-fatal — fall through to normal dispatch
-    }
-  }
-
   // ── Post-unit hooks ──
   if (s.currentUnit && !s.stepMode) {
     const hookUnit = checkPostUnitHooks(s.currentUnit.type, s.currentUnit.id, s.basePath);
@@ -389,79 +362,36 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
       if (s.currentUnit) {
         await closeoutUnit(ctx, s.basePath, s.currentUnit.type, s.currentUnit.id, s.currentUnit.startedAt, buildSnapshotOpts(s.currentUnit.type, s.currentUnit.id));
       }
-      dispatchUnit(s, s.basePath, hookUnit.unitType, hookUnit.unitId);
-
-      const state = await deriveState(s.basePath);
-      updateProgressWidget(ctx, hookUnit.unitType, hookUnit.unitId, state);
-      const hookState = getActiveHook();
-      ctx.ui.notify(
-        `Running post-unit hook: ${hookUnit.hookName} (cycle ${hookState?.cycle ?? 1})`,
-        "info",
-      );
-
-      // Switch model if the hook specifies one
-      if (hookUnit.model) {
-        const availableModels = ctx.modelRegistry.getAvailable();
-        const match = availableModels.find(m =>
-          m.id === hookUnit.model || `${m.provider}/${m.id}` === hookUnit.model,
-        );
-        if (match) {
-          try {
-            await pi.setModel(match);
-          } catch { /* non-fatal */ }
-        }
-      }
-
-      const result = await s.cmdCtx!.newSession();
-      if (result.cancelled) {
-        resetHookState();
-        await stopAuto(ctx, pi, "Hook session cancelled");
-        return "stopped";
-      }
-      const sessionFile = ctx.sessionManager.getSessionFile();
-      writeLock(lockBase(), hookUnit.unitType, hookUnit.unitId, s.completedUnits.length, sessionFile);
       persistHookState(s.basePath);
 
-      // Start supervision timers for hook units
-      const supervisor = resolveAutoSupervisorConfig();
-      const hookHardTimeoutMs = (supervisor.hard_timeout_minutes ?? 30) * 60 * 1000;
-      s.unitTimeoutHandle = setTimeout(async () => {
-        s.unitTimeoutHandle = null;
-        if (!s.active) return;
-        if (s.currentUnit) {
-          writeUnitRuntimeRecord(s.basePath, hookUnit.unitType, hookUnit.unitId, s.currentUnit.startedAt, {
-            phase: "timeout",
-            timeoutAt: Date.now(),
-          });
-        }
-        ctx.ui.notify(
-          `Hook ${hookUnit.hookName} exceeded ${supervisor.hard_timeout_minutes ?? 30}min timeout. Pausing auto-mode.`,
-          "warning",
-        );
-        resetHookState();
-        await pauseAuto(ctx, pi);
-      }, hookHardTimeoutMs);
+      s.sidecarQueue.push({
+        kind: "hook",
+        unitType: hookUnit.unitType,
+        unitId: hookUnit.unitId,
+        prompt: hookUnit.prompt,
+        model: hookUnit.model,
+      });
 
-      if (!s.active) return "stopped";
-      pi.sendMessage(
-        { customType: "gsd-auto", content: hookUnit.prompt, display: s.verbose },
-        { triggerTurn: true },
-      );
-      return "dispatched";
+      debugLog("postUnitPostVerification", {
+        phase: "sidecar-enqueue",
+        kind: "hook",
+        unitType: hookUnit.unitType,
+        unitId: hookUnit.unitId,
+        hookName: hookUnit.hookName,
+      });
+
+      return "continue";
     }
 
     // Check if a hook requested a retry of the trigger unit
     if (isRetryPending()) {
       const trigger = consumeRetryTrigger();
       if (trigger) {
-        const triggerKey = `${trigger.unitType}/${trigger.unitId}`;
-        s.completedKeySet.delete(triggerKey);
-        removePersistedKey(s.basePath, triggerKey);
         ctx.ui.notify(
           `Hook requested retry of ${trigger.unitType} ${trigger.unitId}.`,
           "info",
         );
-        // Fall through to normal dispatch
+        // Fall through to normal dispatch — deriveState will re-derive the unit
       }
     }
   }
@@ -500,51 +430,36 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
               roadmapContext: roadmapContext || "(no active roadmap)",
             });
 
+            if (s.currentUnit) {
+              await closeoutUnit(ctx, s.basePath, s.currentUnit.type, s.currentUnit.id, s.currentUnit.startedAt);
+            }
+
+            const triageUnitId = `${mid}/${sid}/triage`;
+            s.sidecarQueue.push({
+              kind: "triage",
+              unitType: "triage-captures",
+              unitId: triageUnitId,
+              prompt,
+            });
+
+            debugLog("postUnitPostVerification", {
+              phase: "sidecar-enqueue",
+              kind: "triage",
+              unitId: triageUnitId,
+              pendingCount: pending.length,
+            });
+
             ctx.ui.notify(
               `Triaging ${pending.length} pending capture${pending.length === 1 ? "" : "s"}...`,
               "info",
             );
 
-            if (s.currentUnit) {
-              await closeoutUnit(ctx, s.basePath, s.currentUnit.type, s.currentUnit.id, s.currentUnit.startedAt);
-            }
-
-            const triageUnitType = "triage-captures";
-            const triageUnitId = `${mid}/${sid}/triage`;
-            dispatchUnit(s, s.basePath, triageUnitType, triageUnitId);
-            updateProgressWidget(ctx, triageUnitType, triageUnitId, state);
-
-            const result = await s.cmdCtx!.newSession();
-            if (result.cancelled) {
-              await stopAuto(ctx, pi);
-              return "stopped";
-            }
-            const sessionFile = ctx.sessionManager.getSessionFile();
-            writeLock(lockBase(), triageUnitType, triageUnitId, s.completedUnits.length, sessionFile);
-
-            const supervisor = resolveAutoSupervisorConfig();
-            const triageTimeoutMs = (supervisor.hard_timeout_minutes ?? 30) * 60 * 1000;
-            s.unitTimeoutHandle = setTimeout(async () => {
-              s.unitTimeoutHandle = null;
-              if (!s.active) return;
-              ctx.ui.notify(
-                `Triage unit exceeded timeout. Pausing auto-mode.`,
-                "warning",
-              );
-              await pauseAuto(ctx, pi);
-            }, triageTimeoutMs);
-
-            if (!s.active) return "stopped";
-            pi.sendMessage(
-              { customType: "gsd-auto", content: prompt, display: s.verbose },
-              { triggerTurn: true },
-            );
-            return "dispatched";
+            return "continue";
           }
         }
       }
-    } catch {
-      // Triage check failure is non-fatal
+    } catch (e) {
+      debugLog("postUnit", { phase: "triage-check", error: String(e) });
     }
   }
 
@@ -561,51 +476,36 @@ export async function postUnitPostVerification(pctx: PostUnitContext): Promise<"
       const { markCaptureExecuted } = await import("./captures.js");
       const prompt = buildQuickTaskPrompt(capture);
 
+      if (s.currentUnit) {
+        await closeoutUnit(ctx, s.basePath, s.currentUnit.type, s.currentUnit.id, s.currentUnit.startedAt);
+      }
+
+      markCaptureExecuted(s.basePath, capture.id);
+
+      const qtUnitId = `${s.currentMilestoneId}/${capture.id}`;
+      s.sidecarQueue.push({
+        kind: "quick-task",
+        unitType: "quick-task",
+        unitId: qtUnitId,
+        prompt,
+        captureId: capture.id,
+      });
+
+      debugLog("postUnitPostVerification", {
+        phase: "sidecar-enqueue",
+        kind: "quick-task",
+        unitId: qtUnitId,
+        captureId: capture.id,
+      });
+
       ctx.ui.notify(
         `Executing quick-task: ${capture.id} — "${capture.text}"`,
         "info",
       );
 
-      if (s.currentUnit) {
-        await closeoutUnit(ctx, s.basePath, s.currentUnit.type, s.currentUnit.id, s.currentUnit.startedAt);
-      }
-
-      const qtUnitType = "quick-task";
-      const qtUnitId = `${s.currentMilestoneId}/${capture.id}`;
-      dispatchUnit(s, s.basePath, qtUnitType, qtUnitId);
-      const state = await deriveState(s.basePath);
-      updateProgressWidget(ctx, qtUnitType, qtUnitId, state);
-
-      const result = await s.cmdCtx!.newSession();
-      if (result.cancelled) {
-        await stopAuto(ctx, pi);
-        return "stopped";
-      }
-      const sessionFile = ctx.sessionManager.getSessionFile();
-      writeLock(lockBase(), qtUnitType, qtUnitId, s.completedUnits.length, sessionFile);
-
-      markCaptureExecuted(s.basePath, capture.id);
-
-      const supervisor = resolveAutoSupervisorConfig();
-      const qtTimeoutMs = (supervisor.hard_timeout_minutes ?? 30) * 60 * 1000;
-      s.unitTimeoutHandle = setTimeout(async () => {
-        s.unitTimeoutHandle = null;
-        if (!s.active) return;
-        ctx.ui.notify(
-          `Quick-task ${capture.id} exceeded timeout. Pausing auto-mode.`,
-          "warning",
-        );
-        await pauseAuto(ctx, pi);
-      }, qtTimeoutMs);
-
-      if (!s.active) return "stopped";
-      pi.sendMessage(
-        { customType: "gsd-auto", content: prompt, display: s.verbose },
-        { triggerTurn: true },
-      );
-      return "dispatched";
-    } catch {
-      // Non-fatal — proceed to normal dispatch
+      return "continue";
+    } catch (e) {
+      debugLog("postUnit", { phase: "quick-task-dispatch", error: String(e) });
     }
   }
 
