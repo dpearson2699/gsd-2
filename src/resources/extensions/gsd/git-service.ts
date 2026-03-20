@@ -42,6 +42,8 @@ export interface GitPreferences {
   push_branches?: boolean;
   remote?: string;
   snapshots?: boolean;
+  /** Deprecated. .gsd/ is managed externally; retained for compatibility. */
+  commit_docs?: boolean;
   pre_merge_check?: boolean | string;
   commit_type?: string;
   main_branch?: string;
@@ -223,9 +225,21 @@ export function readIntegrationBranch(basePath: string, milestoneId: string): st
  *
  * The file is committed immediately so the metadata is persisted in git.
  */
-export function writeIntegrationBranch(basePath: string, milestoneId: string, branch: string): void {
+/** Regex matching GSD quick-task branches: gsd/quick/<num>-<slug> */
+export const QUICK_BRANCH_RE = /^gsd\/quick\//;
+
+export function writeIntegrationBranch(
+  basePath: string,
+  milestoneId: string,
+  branch: string,
+  _options?: { commitDocs?: boolean },
+): void {
   // Don't record slice branches as the integration target
   if (SLICE_BRANCH_RE.test(branch)) return;
+  // Don't record quick-task branches — they are ephemeral and merge back
+  // to their origin branch on completion. Recording one as the integration
+  // target causes milestone merges to land on the wrong branch (#1293).
+  if (QUICK_BRANCH_RE.test(branch)) return;
   // Validate
   if (!VALID_BRANCH_NAME.test(branch)) return;
   // Skip if already recorded with the same branch (idempotent across restarts).

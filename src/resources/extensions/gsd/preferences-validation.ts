@@ -33,9 +33,24 @@ export function validatePreferences(preferences: GSDPreferences): {
   const validated: GSDPreferences = {};
 
   // ─── Unknown Key Detection ──────────────────────────────────────────
+  // Common key migration hints for pi-level settings that don't map to GSD prefs
+  const KEY_MIGRATION_HINTS: Record<string, string> = {
+    taskIsolation: 'use "git.isolation" instead (values: worktree, branch, none)',
+    task_isolation: 'use "git.isolation" instead (values: worktree, branch, none)',
+    isolation: 'use "git.isolation" instead (values: worktree, branch, none)',
+    manage_gitignore: 'use "git.manage_gitignore" instead',
+    auto_push: 'use "git.auto_push" instead',
+    main_branch: 'use "git.main_branch" instead',
+  };
+
   for (const key of Object.keys(preferences)) {
     if (!KNOWN_PREFERENCE_KEYS.has(key)) {
-      warnings.push(`unknown preference key "${key}" — ignored`);
+      const hint = KEY_MIGRATION_HINTS[key];
+      if (hint) {
+        warnings.push(`unknown preference key "${key}" — ${hint}`);
+      } else {
+        warnings.push(`unknown preference key "${key}" — ignored`);
+      }
     }
   }
 
@@ -224,6 +239,32 @@ export function validatePreferences(preferences: GSDPreferences): {
       validated.notifications = preferences.notifications;
     } else {
       errors.push("notifications must be an object");
+    }
+  }
+
+  // ─── Cmux ───────────────────────────────────────────────────────────────
+  if (preferences.cmux !== undefined) {
+    if (preferences.cmux && typeof preferences.cmux === "object") {
+      const cmux = preferences.cmux as Record<string, unknown>;
+      const validatedCmux: NonNullable<GSDPreferences["cmux"]> = {};
+      if (cmux.enabled !== undefined) validatedCmux.enabled = !!cmux.enabled;
+      if (cmux.notifications !== undefined) validatedCmux.notifications = !!cmux.notifications;
+      if (cmux.sidebar !== undefined) validatedCmux.sidebar = !!cmux.sidebar;
+      if (cmux.splits !== undefined) validatedCmux.splits = !!cmux.splits;
+      if (cmux.browser !== undefined) validatedCmux.browser = !!cmux.browser;
+
+      const knownCmuxKeys = new Set(["enabled", "notifications", "sidebar", "splits", "browser"]);
+      for (const key of Object.keys(cmux)) {
+        if (!knownCmuxKeys.has(key)) {
+          warnings.push(`unknown cmux key "${key}" — ignored`);
+        }
+      }
+
+      if (Object.keys(validatedCmux).length > 0) {
+        validated.cmux = validatedCmux;
+      }
+    } else {
+      errors.push("cmux must be an object");
     }
   }
 
@@ -583,6 +624,44 @@ export function validatePreferences(preferences: GSDPreferences): {
 
     if (Object.keys(git).length > 0) {
       validated.git = git as GitPreferences;
+    }
+  }
+
+  // ─── Auto Visualize ─────────────────────────────────────────────────
+  if (preferences.auto_visualize !== undefined) {
+    if (typeof preferences.auto_visualize === "boolean") {
+      validated.auto_visualize = preferences.auto_visualize;
+    } else {
+      errors.push("auto_visualize must be a boolean");
+    }
+  }
+
+  // ─── Auto Report ────────────────────────────────────────────────────
+  if (preferences.auto_report !== undefined) {
+    if (typeof preferences.auto_report === "boolean") {
+      validated.auto_report = preferences.auto_report;
+    } else {
+      errors.push("auto_report must be a boolean");
+    }
+  }
+
+  // ─── Compression Strategy ───────────────────────────────────────────
+  if (preferences.compression_strategy !== undefined) {
+    const validStrategies = new Set(["truncate", "compress"]);
+    if (typeof preferences.compression_strategy === "string" && validStrategies.has(preferences.compression_strategy)) {
+      validated.compression_strategy = preferences.compression_strategy as GSDPreferences["compression_strategy"];
+    } else {
+      errors.push(`compression_strategy must be one of: truncate, compress`);
+    }
+  }
+
+  // ─── Context Selection ──────────────────────────────────────────────
+  if (preferences.context_selection !== undefined) {
+    const validModes = new Set(["full", "smart"]);
+    if (typeof preferences.context_selection === "string" && validModes.has(preferences.context_selection)) {
+      validated.context_selection = preferences.context_selection as GSDPreferences["context_selection"];
+    } else {
+      errors.push(`context_selection must be one of: full, smart`);
     }
   }
 

@@ -9,10 +9,12 @@
  */
 
 import type { ExtensionContext } from "@gsd/pi-coding-agent";
+import type { GSDState } from "./types.js";
 import { runProviderChecks, summariseProviderIssues } from "./doctor-providers.js";
 import { runEnvironmentChecks } from "./doctor-environment.js";
 import { loadEffectiveGSDPreferences } from "./preferences.js";
 import { loadLedgerFromDisk, getProjectTotals } from "./metrics.js";
+import { describeNextUnit, estimateTimeRemaining, updateSliceProgressCache } from "./auto-dashboard.js";
 import { projectRoot } from "./commands.js";
 import {
   buildHealthLines,
@@ -80,20 +82,34 @@ export function initHealthWidget(ctx: ExtensionContext): void {
   const basePath = projectRoot();
 
   // String-array fallback — used in RPC mode (factory is a no-op there)
-  const initialData = loadHealthWidgetData(basePath);
+  const initialData = loadBaseHealthWidgetData(basePath);
   ctx.ui.setWidget("gsd-health", buildHealthLines(initialData), { placement: "belowEditor" });
 
   // Factory-based widget for TUI mode — replaces the string-array above
   ctx.ui.setWidget("gsd-health", (_tui, _theme) => {
     let data = initialData;
     let cachedLines: string[] | undefined;
+    let refreshInFlight = false;
 
-    const refreshTimer = setInterval(() => {
+    const refresh = async () => {
+      if (refreshInFlight) return;
+      refreshInFlight = true;
       try {
-        data = loadHealthWidgetData(basePath);
+        const baseData = loadBaseHealthWidgetData(basePath);
+        data = await enrichHealthWidgetData(basePath, baseData);
         cachedLines = undefined;
         _tui.requestRender();
-      } catch { /* non-fatal */ }
+      } catch { /* non-fatal */ } finally {
+        refreshInFlight = false;
+      }
+    };
+
+    // Fire first enrichment immediately. requestRender() inside is a no-op
+    // if the widget has not yet rendered, so this is safe before factory return.
+    void refresh();
+
+    const refreshTimer = setInterval(() => {
+      void refresh();
     }, REFRESH_INTERVAL_MS);
 
     return {

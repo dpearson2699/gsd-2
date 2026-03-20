@@ -21,6 +21,12 @@ If you use a non-Anthropic model, you'll need a search API key for web search. R
 
 See [Global API Keys](./configuration.md#global-api-keys-gsd-config) for details on supported keys.
 
+### Set up custom MCP servers
+
+If you want GSD to call local or external MCP servers, add project-local config in `.mcp.json` or `.gsd/mcp.json`.
+
+See [Configuration → MCP Servers](./configuration.md#mcp-servers) for examples and verification steps.
+
 ### VS Code Extension
 
 GSD is also available as a VS Code extension. Install from the marketplace (publisher: FluxLabs) or search for "GSD" in VS Code extensions. The extension provides:

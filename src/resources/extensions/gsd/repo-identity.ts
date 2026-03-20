@@ -8,9 +8,9 @@
 
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 
 // ─── Repo Identity ──────────────────────────────────────────────────────────
 
@@ -35,35 +35,56 @@ function getRemoteUrl(basePath: string): string {
  * Resolve the git toplevel (real root) for the given path.
  * For worktrees this returns the main repo root, not the worktree path.
  */
+function canonicalizeExistingPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
+function resolveGitCommonDir(basePath: string): string {
+  try {
+    return execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+      cwd: basePath,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5_000,
+    }).trim();
+  } catch {
+    const raw = execFileSync("git", ["rev-parse", "--git-common-dir"], {
+      cwd: basePath,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5_000,
+    }).trim();
+    return resolve(basePath, raw);
+  }
+}
+
 function resolveGitRoot(basePath: string): string {
   try {
-    // In a worktree, --show-toplevel returns the worktree path, not the main
-    // repo root. Use --git-common-dir to find the shared .git directory,
-    // then derive the main repo root from it (#1288).
-    const commonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
-      cwd: basePath,
-      encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5_000,
-    }).trim();
+    const commonDir = resolveGitCommonDir(basePath);
+    const normalizedCommonDir = commonDir.replaceAll("\\", "/");
 
-    // If commonDir ends with .git/worktrees/<name>, the main repo is two
-    // levels up from the worktrees dir. If it's just .git, resolve normally.
-    if (commonDir.includes(`${sep}worktrees${sep}`) || commonDir.includes("/worktrees/")) {
-      // e.g., /path/to/project/.gsd/worktrees/M001/.git → /path/to/project
-      // or /path/to/project/.git/worktrees/M001 → /path/to/project
-      const gitDir = commonDir.replace(/[/\\]worktrees[/\\][^/\\]+$/, "");
-      const mainRoot = resolve(gitDir, "..");
-      return mainRoot;
+    // Normal repo or worktree with shared common dir pointing at <repo>/.git.
+    if (normalizedCommonDir.endsWith("/.git")) {
+      return canonicalizeExistingPath(resolve(commonDir, ".."));
     }
 
-    // Not in a worktree — use --show-toplevel as usual
-    return execFileSync("git", ["rev-parse", "--show-toplevel"], {
+    // Some git setups may still expose <repo>/.git/worktrees/<name>.
+    const worktreeMarker = "/.git/worktrees/";
+    if (normalizedCommonDir.includes(worktreeMarker)) {
+      return canonicalizeExistingPath(resolve(commonDir, "..", ".."));
+    }
+
+    // Fallback for unusual layouts.
+    return canonicalizeExistingPath(execFileSync("git", ["rev-parse", "--show-toplevel"], {
       cwd: basePath,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 5_000,
-    }).trim();
+    }).trim());
   } catch {
     return resolve(basePath);
   }
@@ -111,9 +132,16 @@ export function externalGsdRoot(basePath: string): string {
 export function ensureGsdSymlink(projectPath: string): string {
   const externalPath = externalGsdRoot(projectPath);
   const localGsd = join(projectPath, ".gsd");
+  const inWorktree = isInsideWorktree(projectPath);
 
   // Ensure external directory exists
   mkdirSync(externalPath, { recursive: true });
+
+  const replaceWithSymlink = (): string => {
+    rmSync(localGsd, { recursive: true, force: true });
+    symlinkSync(externalPath, localGsd, "junction");
+    return externalPath;
+  };
 
   if (!existsSync(localGsd)) {
     // Nothing exists yet — create symlink
@@ -130,14 +158,20 @@ export function ensureGsdSymlink(projectPath: string): string {
       if (target === externalPath) {
         return externalPath; // correct symlink, no-op
       }
-      // Symlink exists but points elsewhere — leave it for now
-      // (could be a custom override or stale symlink)
+      // In a worktree, mismatched symlinks are always stale. Heal them so
+      // the worktree points at the same external state dir as the main repo.
+      if (inWorktree) {
+        return replaceWithSymlink();
+      }
+      // Outside worktrees, preserve custom overrides or legacy symlinks.
       return target;
     }
 
     if (stat.isDirectory()) {
-      // Real directory — migration will handle this later.
-      // Return the local path so existing code still works.
+      // Real directory in the main repo — migration will handle this later.
+      // In worktrees, keep the directory in place and let syncGsdStateToWorktree
+      // refresh its contents. Replacing a git-tracked .gsd directory with a
+      // symlink makes git think tracked planning files were deleted.
       return localGsd;
     }
   } catch {

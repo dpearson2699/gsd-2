@@ -6,6 +6,88 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.36.0] - 2026-03-20
+
+### Added
+- deprecate agent-instructions.md in favor of AGENTS.md / CLAUDE.md (#1492) (#1514)
+- AI-powered issue and PR triage via Claude Haiku (#1510)
+
+### Fixed
+- preserve user messages during abort with origin-aware queue clearing (#1439) (#1521)
+- remove broken SwiftUI skill and add CI reference check (#1476) (#1520)
+- wire escalateTier into auto-loop retry path (#1505) (#1519)
+- prevent bare /gsd from stealing session lock from running auto-mode (#1507) (#1517)
+- wire dead token-profile defaults and add /gsd rate command (#1505) (#1516)
+- prevent false-positive session lock loss during sleep/event loop stalls (#1512) (#1513)
+- **gsd**: filter non-milestone directories from findMilestoneIds (#1494) (#1508)
+- **gsd**: accept 'passed' as terminal validation verdict (#1429) (#1509)
+- add missing imports breaking CI build (#1511)
+- prevent ensureGitignore from adding .gsd when tracked in git (#1364) (#1367)
+- check project root .env when secrets gate runs in worktree (#1387) (#1470)
+- realign cwd before dispatch + clean stale merge state on failure (#1389) (#1400)
+- create milestones/ directory in worktree when missing (#1374)
+- inject network_idle warning into hook prompts (#1345) (#1401)
+- verify symlink after migration + fix test failures (#1377) (#1404)
+- validate CWD instead of project root when running from a GSD worktree (#1317) (#1504)
+- **gsd**: detect initialized health widget projects (#1432)
+- smarter .gsd root discovery — git-root anchor + walk-up replaces symlink hack (#1386)
+- correct GSD-WORKFLOW.md fallback path and sync to agentDir (#1375)
+- always include reasoning.encrypted_content for OpenAI reasoning models
+- **gsd**: avoid EISDIR crash in file loader
+- **gsd**: open existing database on inspect
+
+## [2.35.0] - 2026-03-19
+
+### Added
+- **gsd**: add /gsd changelog command with LLM-summarized release notes (#1465)
+
+### Fixed
+- restore lsp single-server selector export
+- **mcp**: preserve args for mcp_call tool invocations (#1354)
+- accumulate session cost independently of message array (#1423)
+- resolve CI failures — scope provider check, fix Windows path, correct severity
+- close 5 doctor coverage gaps — providers, lock dir, integration branch, orphaned worktrees
+- add PID self-check to guided-flow crash lock detection (#1398)
+- **prefs**: close merge, validation, serialization, and docs gaps
+
+### Changed
+- deduplicate error emission and message patterns in agent-core (#1444)
+- simplify settings manager with generic setter helpers (#1461)
+- consolidate theme files and remove manual schema (#1478)
+- extract overlay layout and compositing from TUI into separate module (#1482)
+- extract slash command handlers from interactive-mode (#1485)
+- remove dead code (unused exports) (#1486)
+- extract retry handler and compaction orchestrator from agent-session
+- deduplicate rendering patterns in markdown and keys
+- consolidate shared code between OpenAI providers
+- deduplicate RPC mode shared patterns
+- extract shared tree rendering utilities
+- consolidate OAuth callback server and helper utilities
+- extract shared file lock utilities
+- consolidate resource loader with generic update/dedupe methods
+- consolidate model switching logic in agent-session
+- extract shared helpers in compaction module
+- deduplicate toPosixPath, ZERO_USAGE, and shortenPath utilities
+- consolidate 9 emit methods in extension runner into shared invokeHandlers
+- consolidate extension type guards and inline handler type aliases
+- consolidate duplicate patterns in LSP module
+
+## [2.34.0] - 2026-03-19
+
+### Added
+- auto-generate OpenRouter model registry from API + add missing models (#1407) (#1426)
+
+### Fixed
+- release stranded bootstrap locks and handle re-entrant reacquire (#1352)
+- add JS fallbacks for wrapTextWithAnsi and visibleWidth when native addon unavailable (#1418) (#1428)
+- emit agent_end after abort during tool execution (#1414) (#1417)
+- auto-discard bootstrap crash locks and clean auto.lock on exit (#1397)
+- harden quick-task branch lifecycle — disk recovery + integration branch guard (#1342)
+- skip verification retry on spawn infra errors (ETIMEDOUT, ENOENT) (#1340)
+- keep external GSD state stable in worktrees (#1334)
+- stop excluding all .gsd/ from commits — only exclude runtime files (#1326) (#1328)
+- handle ECOMPROMISED in uncaughtException guard and align retry onCompromised (#1322) (#1332)
+
 ## [2.33.1] - 2026-03-19
 
 ### Fixed
@@ -1318,7 +1400,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - License updated to MIT
 
-[Unreleased]: https://github.com/gsd-build/gsd-2/compare/v2.33.1...HEAD
+[Unreleased]: https://github.com/gsd-build/gsd-2/compare/v2.36.0...HEAD
+[2.36.0]: https://github.com/gsd-build/gsd-2/compare/v2.35.0...v2.36.0
+[2.35.0]: https://github.com/gsd-build/gsd-2/compare/v2.34.0...v2.35.0
+[2.34.0]: https://github.com/gsd-build/gsd-2/compare/v2.33.1...v2.34.0
 [2.33.1]: https://github.com/gsd-build/gsd-2/compare/v2.33.0...v2.33.1
 [2.33.0]: https://github.com/gsd-build/gsd-2/compare/v2.32.0...v2.33.0
 [2.32.0]: https://github.com/gsd-build/gsd-2/compare/v2.31.2...v2.32.0

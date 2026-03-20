@@ -34,7 +34,6 @@ import type { FileLineStat } from "./worktree-manager.js";
 import { existsSync, realpathSync, readdirSync, rmSync, unlinkSync } from "node:fs";
 import { nativeMergeAbort } from "./native-git-bridge.js";
 import { join, sep } from "node:path";
-import { getErrorMessage } from "./error-utils.js";
 
 /**
  * Tracks the original project root so we can switch back.
@@ -51,7 +50,7 @@ export function getWorktreeOriginalCwd(): string | null {
 export function getActiveWorktreeName(): string | null {
   if (!originalCwd) return null;
   const cwd = process.cwd();
-  const wtDir = join(gsdRoot(originalCwd), "worktrees");
+  const wtDir = join(originalCwd, ".gsd", "worktrees");
   if (!cwd.startsWith(wtDir)) return null;
   const rel = cwd.slice(wtDir.length + 1);
   const name = rel.split("/")[0] ?? rel.split("\\")[0];
@@ -229,6 +228,15 @@ async function worktreeHandler(
   }
 }
 
+export async function handleWorktreeCommand(
+  args: string,
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+  alias: string,
+): Promise<void> {
+  await worktreeHandler(args, ctx, pi, alias);
+}
+
 export function registerWorktreeCommand(pi: ExtensionAPI): void {
   // Restore worktree state after /reload.
   // The module-level originalCwd resets to null when extensions are re-loaded,
@@ -247,7 +255,7 @@ export function registerWorktreeCommand(pi: ExtensionAPI): void {
     getArgumentCompletions: worktreeCompletions,
 
     async handler(args: string, ctx: ExtensionCommandContext) {
-      await worktreeHandler(args, ctx, pi, "worktree");
+      await handleWorktreeCommand(args, ctx, pi, "worktree");
     },
   });
 
@@ -256,7 +264,7 @@ export function registerWorktreeCommand(pi: ExtensionAPI): void {
     description: "Alias for /worktree",
     getArgumentCompletions: worktreeCompletions,
     async handler(args: string, ctx: ExtensionCommandContext) {
-      await worktreeHandler(args, ctx, pi, "wt");
+      await handleWorktreeCommand(args, ctx, pi, "wt");
     },
   });
 }
@@ -371,7 +379,7 @@ async function handleCreate(
       "info",
     );
   } catch (error) {
-    const msg = getErrorMessage(error);
+    const msg = error instanceof Error ? error.message : String(error);
     ctx.ui.notify(`Failed to create worktree: ${msg}`, "error");
   }
 }
@@ -419,7 +427,7 @@ async function handleSwitch(
       "info",
     );
   } catch (error) {
-    const msg = getErrorMessage(error);
+    const msg = error instanceof Error ? error.message : String(error);
     ctx.ui.notify(`Failed to switch to worktree: ${msg}`, "error");
   }
 }
@@ -529,7 +537,7 @@ async function handleList(
 
     ctx.ui.notify(lines.join("\n"), "info");
   } catch (error) {
-    const msg = getErrorMessage(error);
+    const msg = error instanceof Error ? error.message : String(error);
     ctx.ui.notify(`Failed to list worktrees: ${msg}`, "error");
   }
 }
@@ -634,6 +642,16 @@ async function handleMerge(
     const commitType = inferCommitType(name);
     const commitMessage = `${commitType}(${name}): merge worktree ${name}`;
 
+    // Reconcile worktree DB into main DB before squash merge
+    const wtDbPath = join(worktreePath(basePath, name), ".gsd", "gsd.db");
+    const mainDbPath = join(basePath, ".gsd", "gsd.db");
+    if (existsSync(wtDbPath) && existsSync(mainDbPath)) {
+      try {
+        const { reconcileWorktreeDb } = await import("./gsd-db.js");
+        reconcileWorktreeDb(mainDbPath, wtDbPath);
+      } catch { /* non-fatal */ }
+    }
+
     try {
       mergeWorktreeToMain(basePath, name, commitMessage);
       ctx.ui.notify(
@@ -647,7 +665,7 @@ async function handleMerge(
       );
       return;
     } catch (mergeErr) {
-      const mergeMsg = getErrorMessage(mergeErr);
+      const mergeMsg = mergeErr instanceof Error ? mergeErr.message : String(mergeErr);
       const isConflict = /conflict/i.test(mergeMsg);
 
       if (isConflict) {
@@ -704,7 +722,7 @@ async function handleMerge(
       "info",
     );
   } catch (error) {
-    const msg = getErrorMessage(error);
+    const msg = error instanceof Error ? error.message : String(error);
     ctx.ui.notify(`Failed to start merge: ${msg}`, "error");
   }
 }
@@ -747,7 +765,7 @@ async function handleRemove(
 
     ctx.ui.notify(`${CLR.ok("✓")} Worktree ${CLR.name(name)} removed ${CLR.muted("(branch deleted)")}.`, "info");
   } catch (error) {
-    const msg = getErrorMessage(error);
+    const msg = error instanceof Error ? error.message : String(error);
     ctx.ui.notify(`Failed to remove worktree: ${msg}`, "error");
   }
 }
@@ -801,7 +819,7 @@ async function handleRemoveAll(
     if (failed.length > 0) lines.push(`${CLR.warn("✗")} Failed: ${failed.map(n => CLR.name(n)).join(", ")}`);
     ctx.ui.notify(lines.join("\n"), failed.length > 0 ? "warning" : "info");
   } catch (error) {
-    const msg = getErrorMessage(error);
+    const msg = error instanceof Error ? error.message : String(error);
     ctx.ui.notify(`Failed to remove worktrees: ${msg}`, "error");
   }
 }

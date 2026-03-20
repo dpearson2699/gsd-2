@@ -48,6 +48,8 @@ import { computeProgressScore, formatProgressLine } from "./progress-score.js";
 import { runEnvironmentChecks } from "./doctor-environment.js";
 import { handleLogs } from "./commands-logs.js";
 import { handleStart, handleTemplates, getTemplateCompletions } from "./commands-workflow-templates.js";
+import { readSessionLockData, isSessionLockProcessAlive } from "./session-lock.js";
+import { handleCmux } from "./commands-cmux.js";
 
 
 /** Resolve the effective project root, accounting for worktree paths. */
@@ -69,9 +71,42 @@ export function projectRoot(): string {
   return root;
 }
 
+/**
+ * Check if another process holds the auto-mode session lock.
+ * Returns the lock data if a remote session is alive, null otherwise.
+ */
+function getRemoteAutoSession(basePath: string): { pid: number } | null {
+  const lockData = readSessionLockData(basePath);
+  if (!lockData) return null;
+  if (lockData.pid === process.pid) return null;
+  if (!isSessionLockProcessAlive(lockData)) return null;
+  return { pid: lockData.pid };
+}
+
+/**
+ * Show a steering menu when auto-mode is running in another process.
+ * Returns true if a remote session was detected (caller should return early).
+ */
+function notifyRemoteAutoActive(ctx: ExtensionCommandContext, basePath: string): boolean {
+  const remote = getRemoteAutoSession(basePath);
+  if (!remote) return false;
+  ctx.ui.notify(
+    `Auto-mode is running in another process (PID ${remote.pid}).\n` +
+    `Use these commands to interact with it:\n` +
+    `  /gsd status   — check progress\n` +
+    `  /gsd discuss  — discuss architecture decisions\n` +
+    `  /gsd queue    — queue the next milestone\n` +
+    `  /gsd steer    — apply an override to active work\n` +
+    `  /gsd capture  — fire-and-forget thought\n` +
+    `  /gsd stop     — stop auto-mode`,
+    "warning",
+  );
+  return true;
+}
+
 export function registerGSDCommand(pi: ExtensionAPI): void {
   pi.registerCommand("gsd", {
-    description: "GSD — Get Shit Done: /gsd help|start|templates|next|auto|stop|pause|status|visualize|queue|quick|capture|triage|dispatch|history|undo|skip|export|cleanup|mode|prefs|config|keys|hooks|run-hook|skill-health|doctor|forensics|migrate|remote|steer|knowledge|new-milestone|parallel|update",
+    description: "GSD — Get Shit Done: /gsd help|start|templates|next|auto|stop|pause|status|visualize|queue|quick|capture|triage|dispatch|history|undo|skip|export|cleanup|mode|prefs|config|keys|hooks|run-hook|skill-health|doctor|forensics|changelog|migrate|remote|steer|knowledge|new-milestone|parallel|cmux|update",
     getArgumentCompletions: (prefix: string) => {
       const subcommands = [
         { cmd: "help", desc: "Categorized command reference with descriptions" },
@@ -80,14 +115,17 @@ export function registerGSDCommand(pi: ExtensionAPI): void {
         { cmd: "stop", desc: "Stop auto mode gracefully" },
         { cmd: "pause", desc: "Pause auto-mode (preserves state, /gsd auto to resume)" },
         { cmd: "status", desc: "Progress dashboard" },
+        { cmd: "widget", desc: "Cycle widget: full → small → min → off" },
         { cmd: "visualize", desc: "Open 10-tab workflow visualizer (progress, timeline, deps, metrics, health, agent, changes, knowledge, captures, export)" },
         { cmd: "queue", desc: "Queue and reorder future milestones" },
         { cmd: "quick", desc: "Execute a quick task without full planning overhead" },
         { cmd: "discuss", desc: "Discuss architecture and decisions" },
         { cmd: "capture", desc: "Fire-and-forget thought capture" },
+        { cmd: "changelog", desc: "Show categorized release notes" },
         { cmd: "triage", desc: "Manually trigger triage of pending captures" },
         { cmd: "dispatch", desc: "Dispatch a specific phase directly" },
         { cmd: "history", desc: "View execution history" },
+        { cmd: "rate", desc: "Rate last unit's model tier (over/ok/under) — improves adaptive routing" },
         { cmd: "undo", desc: "Revert last completed unit" },
         { cmd: "skip", desc: "Prevent a unit from auto-mode dispatch" },
         { cmd: "export", desc: "Export milestone/slice results" },
@@ -111,6 +149,7 @@ export function registerGSDCommand(pi: ExtensionAPI): void {
         { cmd: "knowledge", desc: "Add persistent project knowledge (rule, pattern, or lesson)" },
         { cmd: "new-milestone", desc: "Create a milestone from a specification document (headless)" },
         { cmd: "parallel", desc: "Parallel milestone orchestration (start, status, stop, merge)" },
+        { cmd: "cmux", desc: "Manage cmux integration (status, sidebar, notifications, splits)" },
         { cmd: "park", desc: "Park a milestone — skip without deleting" },
         { cmd: "unpark", desc: "Reactivate a parked milestone" },
         { cmd: "update", desc: "Update GSD to the latest version" },
@@ -165,6 +204,38 @@ export function registerGSDCommand(pi: ExtensionAPI): void {
         return subs
           .filter((s) => s.cmd.startsWith(subPrefix))
           .map((s) => ({ value: `parallel ${s.cmd}`, label: s.cmd, description: s.desc }));
+      }
+
+      if (parts[0] === "cmux") {
+        if (parts.length <= 2) {
+          const subPrefix = parts[1] ?? "";
+          const subs = [
+            { cmd: "status", desc: "Show cmux detection, prefs, and capabilities" },
+            { cmd: "on", desc: "Enable cmux integration" },
+            { cmd: "off", desc: "Disable cmux integration" },
+            { cmd: "notifications", desc: "Toggle cmux desktop notifications" },
+            { cmd: "sidebar", desc: "Toggle cmux sidebar metadata" },
+            { cmd: "splits", desc: "Toggle cmux visual subagent splits" },
+            { cmd: "browser", desc: "Toggle future browser integration flag" },
+          ];
+          return subs
+            .filter((s) => s.cmd.startsWith(subPrefix))
+            .map((s) => ({ value: `cmux ${s.cmd}`, label: s.cmd, description: s.desc }));
+        }
+
+        if (parts.length <= 3 && ["notifications", "sidebar", "splits", "browser"].includes(parts[1])) {
+          const togglePrefix = parts[2] ?? "";
+          return [
+            { cmd: "on", desc: "Enable this cmux area" },
+            { cmd: "off", desc: "Disable this cmux area" },
+          ]
+            .filter((item) => item.cmd.startsWith(togglePrefix))
+            .map((item) => ({
+              value: `cmux ${parts[1]} ${item.cmd}`,
+              label: item.cmd,
+              description: item.desc,
+            }));
+        }
       }
 
       if (parts[0] === "setup" && parts.length <= 2) {
@@ -416,36 +487,63 @@ export function registerGSDCommand(pi: ExtensionAPI): void {
     },
 
     async handler(args: string, ctx: ExtensionCommandContext) {
-      const trimmed = (typeof args === "string" ? args : "").trim();
+      await handleGSDCommand(args, ctx, pi);
+    },
+  });
+}
 
-      if (trimmed === "help" || trimmed === "h" || trimmed === "?") {
-        showHelp(ctx);
-        return;
-      }
+export async function handleGSDCommand(
+  args: string,
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+): Promise<void> {
+  const trimmed = (typeof args === "string" ? args : "").trim();
 
-      if (trimmed === "status") {
-        await handleStatus(ctx);
-        return;
-      }
+  if (trimmed === "help" || trimmed === "h" || trimmed === "?") {
+    showHelp(ctx);
+    return;
+  }
 
-      if (trimmed === "visualize") {
-        await handleVisualize(ctx);
-        return;
-      }
+  if (trimmed === "status") {
+    await handleStatus(ctx);
+    return;
+  }
 
-      if (trimmed === "mode" || trimmed.startsWith("mode ")) {
-        const modeArgs = trimmed.replace(/^mode\s*/, "").trim();
-        const scope = modeArgs === "project" ? "project" : "global";
-        const path = scope === "project" ? getProjectGSDPreferencesPath() : getGlobalGSDPreferencesPath();
-        await ensurePreferencesFile(path, ctx, scope);
-        await handlePrefsMode(ctx, scope);
-        return;
-      }
+  if (trimmed === "widget" || trimmed.startsWith("widget ")) {
+    const { cycleWidgetMode, setWidgetMode, getWidgetMode } = await import("./auto-dashboard.js");
+    const arg = trimmed.replace(/^widget\s*/, "").trim();
+    if (arg === "full" || arg === "small" || arg === "min" || arg === "off") {
+      setWidgetMode(arg);
+    } else {
+      cycleWidgetMode();
+    }
+    ctx.ui.notify(`Widget: ${getWidgetMode()}`, "info");
+    return;
+  }
 
-      if (trimmed === "prefs" || trimmed.startsWith("prefs ")) {
-        await handlePrefs(trimmed.replace(/^prefs\s*/, "").trim(), ctx);
-        return;
-      }
+  if (trimmed === "visualize") {
+    await handleVisualize(ctx);
+    return;
+  }
+
+  if (trimmed === "mode" || trimmed.startsWith("mode ")) {
+    const modeArgs = trimmed.replace(/^mode\s*/, "").trim();
+    const scope = modeArgs === "project" ? "project" : "global";
+    const path = scope === "project" ? getProjectGSDPreferencesPath() : getGlobalGSDPreferencesPath();
+    await ensurePreferencesFile(path, ctx, scope);
+    await handlePrefsMode(ctx, scope);
+    return;
+  }
+
+  if (trimmed === "prefs" || trimmed.startsWith("prefs ")) {
+    await handlePrefs(trimmed.replace(/^prefs\s*/, "").trim(), ctx);
+    return;
+  }
+
+  if (trimmed === "cmux" || trimmed.startsWith("cmux ")) {
+    await handleCmux(trimmed.replace(/^cmux\s*/, "").trim(), ctx);
+    return;
+  }
 
       if (trimmed === "init") {
         const { detectProjectState } = await import("./detection.js");
@@ -489,11 +587,18 @@ export function registerGSDCommand(pi: ExtensionAPI): void {
         return;
       }
 
+      if (trimmed === "changelog" || trimmed.startsWith("changelog ")) {
+        const { handleChangelog } = await import("./changelog.js");
+        await handleChangelog(trimmed.replace(/^changelog\s*/, "").trim(), ctx, pi);
+        return;
+      }
+
       if (trimmed === "next" || trimmed.startsWith("next ")) {
         if (trimmed.includes("--dry-run")) {
           await handleDryRun(ctx, projectRoot());
           return;
         }
+        if (notifyRemoteAutoActive(ctx, projectRoot())) return;
         const verboseMode = trimmed.includes("--verbose");
         const debugMode = trimmed.includes("--debug");
         if (debugMode) enableDebug(projectRoot());
@@ -546,6 +651,12 @@ export function registerGSDCommand(pi: ExtensionAPI): void {
 
       if (trimmed === "undo" || trimmed.startsWith("undo ")) {
         await handleUndo(trimmed.replace(/^undo\s*/, "").trim(), ctx, pi, projectRoot());
+        return;
+      }
+
+      if (trimmed === "rate" || trimmed.startsWith("rate ")) {
+        const { handleRate } = await import("./commands-rate.js");
+        await handleRate(trimmed.replace(/^rate\s*/, "").trim(), ctx, projectRoot());
         return;
       }
 
@@ -882,7 +993,7 @@ Examples:
       }
 
       if (trimmed === "") {
-        // Bare /gsd defaults to step mode
+        if (notifyRemoteAutoActive(ctx, projectRoot())) return;
         await startAuto(ctx, pi, projectRoot(), false, { step: true });
         return;
       }
@@ -893,12 +1004,10 @@ Examples:
         return;
       }
 
-      ctx.ui.notify(
-        `Unknown: /gsd ${trimmed}. Run /gsd help for available commands.`,
-        "warning",
-      );
-    },
-  });
+  ctx.ui.notify(
+    `Unknown: /gsd ${trimmed}. Run /gsd help for available commands.`,
+    "warning",
+  );
 }
 
 function showHelp(ctx: ExtensionCommandContext): void {
@@ -920,6 +1029,7 @@ function showHelp(ctx: ExtensionCommandContext): void {
     "  /gsd visualize      Interactive 10-tab TUI (progress, timeline, deps, metrics, health, agent, changes, knowledge, captures, export)",
     "  /gsd queue          Show queued/dispatched units and execution order",
     "  /gsd history        View execution history  [--cost] [--phase] [--model] [N]",
+    "  /gsd changelog      Show categorized release notes  [version]",
     "",
     "COURSE CORRECTION",
     "  /gsd steer <desc>   Apply user override to active work",
@@ -938,6 +1048,7 @@ function showHelp(ctx: ExtensionCommandContext): void {
     "  /gsd setup          Global setup status  [llm|search|remote|keys|prefs]",
     "  /gsd mode           Set workflow mode (solo/team)  [global|project]",
     "  /gsd prefs          Manage preferences  [global|project|status|wizard|setup|import-claude]",
+    "  /gsd cmux           Manage cmux integration  [status|on|off|notifications|sidebar|splits|browser]",
     "  /gsd config         Set API keys for external tools",
     "  /gsd keys           API key manager  [list|add|remove|test|rotate|doctor]",
     "  /gsd hooks          Show post-unit hook configuration",
