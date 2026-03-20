@@ -47,10 +47,11 @@ import {
 } from "./crash-recovery.js";
 import {
   acquireSessionLock,
-  validateSessionLock,
+  getSessionLockStatus,
   releaseSessionLock,
   updateSessionLock,
 } from "./session-lock.js";
+import type { SessionLockStatus } from "./session-lock.js";
 import {
   clearUnitRuntimeRecord,
   inspectExecuteTaskDurability,
@@ -417,6 +418,38 @@ export function stopAutoRemote(projectRoot: string): {
   }
 }
 
+/**
+ * Check if a remote auto-mode session is running (from a different process).
+ * Reads the crash lock, checks PID liveness, and returns session details.
+ * Used by the guard in commands.ts to prevent bare /gsd, /gsd next, and
+ * /gsd auto from stealing the session lock.
+ */
+export function checkRemoteAutoSession(projectRoot: string): {
+  running: boolean;
+  pid?: number;
+  unitType?: string;
+  unitId?: string;
+  startedAt?: string;
+  completedUnits?: number;
+} {
+  const lock = readCrashLock(projectRoot);
+  if (!lock) return { running: false };
+
+  if (!isLockProcessAlive(lock)) {
+    // Stale lock from a dead process — not a live remote session
+    return { running: false };
+  }
+
+  return {
+    running: true,
+    pid: lock.pid,
+    unitType: lock.unitType,
+    unitId: lock.unitId,
+    startedAt: lock.startedAt,
+    completedUnits: lock.completedUnits,
+  };
+}
+
 export function isStepMode(): boolean {
   return s.stepMode;
 }
@@ -461,15 +494,33 @@ function buildSnapshotOpts(
   };
 }
 
-function handleLostSessionLock(ctx?: ExtensionContext): void {
-  debugLog("session-lock-lost", { lockBase: lockBase() });
+function handleLostSessionLock(
+  ctx?: ExtensionContext,
+  lockStatus?: SessionLockStatus,
+): void {
+  debugLog("session-lock-lost", {
+    lockBase: lockBase(),
+    reason: lockStatus?.failureReason,
+    existingPid: lockStatus?.existingPid,
+    expectedPid: lockStatus?.expectedPid,
+  });
   s.active = false;
   s.paused = false;
   clearUnitTimeout();
   deregisterSigtermHandler();
   clearCmuxSidebar(loadEffectiveGSDPreferences()?.preferences);
+  const message =
+    lockStatus?.failureReason === "pid-mismatch"
+      ? lockStatus.existingPid
+        ? `Session lock moved to PID ${lockStatus.existingPid} — another GSD process appears to have taken over. Stopping gracefully.`
+        : "Session lock moved to a different process — another GSD process appears to have taken over. Stopping gracefully."
+      : lockStatus?.failureReason === "missing-metadata"
+        ? "Session lock metadata disappeared, so ownership could not be confirmed. Stopping gracefully."
+        : lockStatus?.failureReason === "compromised"
+          ? "Session lock was compromised or invalidated during heartbeat checks; takeover was not confirmed. Stopping gracefully."
+          : "Session lock lost. Stopping gracefully.";
   ctx?.ui.notify(
-    "Session lock lost — another GSD process appears to have taken over. Stopping gracefully.",
+    message,
     "error",
   );
   ctx?.ui.setStatus("gsd-auto", undefined);
@@ -485,129 +536,167 @@ export async function stopAuto(
   if (!s.active && !s.paused) return;
   const loadedPreferences = loadEffectiveGSDPreferences()?.preferences;
   const reasonSuffix = reason ? ` — ${reason}` : "";
-  clearUnitTimeout();
-  if (lockBase()) clearLock(lockBase());
-  if (lockBase()) releaseSessionLock(lockBase());
-  clearSkillSnapshot();
-  resetSkillTelemetry();
 
-  // Remove SIGTERM handler registered at auto-mode start
-  deregisterSigtermHandler();
-
-  // ── Auto-worktree: exit worktree and reset s.basePath on stop ──
-  if (s.currentMilestoneId) {
-    const notifyCtx = ctx
-      ? { notify: ctx.ui.notify.bind(ctx.ui) }
-      : { notify: () => {} };
-    buildResolver().exitMilestone(s.currentMilestoneId, notifyCtx, {
-      preserveBranch: true,
-    });
-  }
-
-  // ── DB cleanup: close the SQLite connection ──
-  if (isDbAvailable()) {
-    try {
-      const { closeDatabase } = await import("./gsd-db.js");
-      closeDatabase();
-    } catch (e) {
-      debugLog("db-close-failed", {
-        error: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }
-
-  if (s.originalBasePath) {
-    s.basePath = s.originalBasePath;
-    try {
-      process.chdir(s.basePath);
-    } catch {
-      /* best-effort */
-    }
-  }
-
-  const ledger = getLedger();
-  if (ledger && ledger.units.length > 0) {
-    const totals = getProjectTotals(ledger.units);
-    ctx?.ui.notify(
-      `Auto-mode stopped${reasonSuffix}. Session: ${formatCost(totals.cost)} · ${formatTokenCount(totals.tokens.total)} tokens · ${ledger.units.length} units`,
-      "info",
-    );
-  } else {
-    ctx?.ui.notify(`Auto-mode stopped${reasonSuffix}.`, "info");
-  }
-
-  if (s.basePath) {
-    try {
-      await rebuildState(s.basePath);
-    } catch (e) {
-      debugLog("stop-rebuild-state-failed", {
-        error: e instanceof Error ? e.message : String(e),
-      });
-    }
-  }
-
-  clearCmuxSidebar(loadedPreferences);
-  logCmuxEvent(
-    loadedPreferences,
-    `Auto-mode stopped${reasonSuffix || ""}.`,
-    reason?.startsWith("Blocked:") ? "warning" : "info",
-  );
-
-  if (isDebugEnabled()) {
-    const logPath = writeDebugSummary();
-    if (logPath) {
-      ctx?.ui.notify(`Debug log written → ${logPath}`, "info");
-    }
-  }
-
-  resetMetrics();
-  resetRoutingHistory();
-  resetHookState();
-  if (s.basePath) clearPersistedHookState(s.basePath);
-
-  // Remove paused-session metadata if present (#1383)
   try {
-    const pausedPath = join(gsdRoot(s.originalBasePath || s.basePath), "runtime", "paused-session.json");
-    if (existsSync(pausedPath)) unlinkSync(pausedPath);
-  } catch { /* non-fatal */ }
+    // ── Step 1: Timers and locks ──
+    try {
+      clearUnitTimeout();
+      if (lockBase()) clearLock(lockBase());
+      if (lockBase()) releaseSessionLock(lockBase());
+    } catch (e) {
+      debugLog("stop-cleanup-locks", { error: e instanceof Error ? e.message : String(e) });
+    }
 
-  s.active = false;
-  s.paused = false;
-  s.stepMode = false;
-  s.unitDispatchCount.clear();
-  s.unitRecoveryCount.clear();
-  clearInFlightTools();
-  s.lastBudgetAlertLevel = 0;
-  s.lastStateRebuildAt = 0;
-  s.unitLifetimeDispatches.clear();
-  s.currentUnit = null;
-  s.autoModeStartModel = null;
-  s.currentMilestoneId = null;
-  s.originalBasePath = "";
-  s.completedUnits = [];
-  s.pendingQuickTasks = [];
-  clearSliceProgressCache();
-  clearActivityLogState();
-  resetProactiveHealing();
-  s.pendingCrashRecovery = null;
-  s.pendingVerificationRetry = null;
-  s.verificationRetryCount.clear();
-  s.pausedSessionFile = null;
-  ctx?.ui.setStatus("gsd-auto", undefined);
-  ctx?.ui.setWidget("gsd-progress", undefined);
-  ctx?.ui.setFooter(undefined);
+    // ── Step 2: Skill state ──
+    try {
+      clearSkillSnapshot();
+      resetSkillTelemetry();
+    } catch (e) {
+      debugLog("stop-cleanup-skills", { error: e instanceof Error ? e.message : String(e) });
+    }
 
-  if (pi && ctx && s.originalModelId && s.originalModelProvider) {
-    const original = ctx.modelRegistry.find(
-      s.originalModelProvider,
-      s.originalModelId,
-    );
-    if (original) await pi.setModel(original);
-    s.originalModelId = null;
-    s.originalModelProvider = null;
+    // ── Step 3: SIGTERM handler ──
+    try {
+      deregisterSigtermHandler();
+    } catch (e) {
+      debugLog("stop-cleanup-sigterm", { error: e instanceof Error ? e.message : String(e) });
+    }
+
+    // ── Step 4: Auto-worktree exit ──
+    try {
+      if (s.currentMilestoneId) {
+        const notifyCtx = ctx
+          ? { notify: ctx.ui.notify.bind(ctx.ui) }
+          : { notify: () => {} };
+        buildResolver().exitMilestone(s.currentMilestoneId, notifyCtx, {
+          preserveBranch: true,
+        });
+      }
+    } catch (e) {
+      debugLog("stop-cleanup-worktree", { error: e instanceof Error ? e.message : String(e) });
+    }
+
+    // ── Step 5: DB cleanup ──
+    if (isDbAvailable()) {
+      try {
+        const { closeDatabase } = await import("./gsd-db.js");
+        closeDatabase();
+      } catch (e) {
+        debugLog("db-close-failed", {
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+
+    // ── Step 6: Restore basePath and chdir ──
+    try {
+      if (s.originalBasePath) {
+        s.basePath = s.originalBasePath;
+        try {
+          process.chdir(s.basePath);
+        } catch {
+          /* best-effort */
+        }
+      }
+    } catch (e) {
+      debugLog("stop-cleanup-basepath", { error: e instanceof Error ? e.message : String(e) });
+    }
+
+    // ── Step 7: Ledger notification ──
+    try {
+      const ledger = getLedger();
+      if (ledger && ledger.units.length > 0) {
+        const totals = getProjectTotals(ledger.units);
+        ctx?.ui.notify(
+          `Auto-mode stopped${reasonSuffix}. Session: ${formatCost(totals.cost)} · ${formatTokenCount(totals.tokens.total)} tokens · ${ledger.units.length} units`,
+          "info",
+        );
+      } else {
+        ctx?.ui.notify(`Auto-mode stopped${reasonSuffix}.`, "info");
+      }
+    } catch (e) {
+      debugLog("stop-cleanup-ledger", { error: e instanceof Error ? e.message : String(e) });
+    }
+
+    // ── Step 8: Rebuild state ──
+    if (s.basePath) {
+      try {
+        await rebuildState(s.basePath);
+      } catch (e) {
+        debugLog("stop-rebuild-state-failed", {
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+
+    // ── Step 9: Cmux sidebar / event log ──
+    try {
+      clearCmuxSidebar(loadedPreferences);
+      logCmuxEvent(
+        loadedPreferences,
+        `Auto-mode stopped${reasonSuffix || ""}.`,
+        reason?.startsWith("Blocked:") ? "warning" : "info",
+      );
+    } catch (e) {
+      debugLog("stop-cleanup-cmux", { error: e instanceof Error ? e.message : String(e) });
+    }
+
+    // ── Step 10: Debug summary ──
+    try {
+      if (isDebugEnabled()) {
+        const logPath = writeDebugSummary();
+        if (logPath) {
+          ctx?.ui.notify(`Debug log written → ${logPath}`, "info");
+        }
+      }
+    } catch (e) {
+      debugLog("stop-cleanup-debug", { error: e instanceof Error ? e.message : String(e) });
+    }
+
+    // ── Step 11: Reset metrics, routing, hooks ──
+    try {
+      resetMetrics();
+      resetRoutingHistory();
+      resetHookState();
+      if (s.basePath) clearPersistedHookState(s.basePath);
+    } catch (e) {
+      debugLog("stop-cleanup-metrics", { error: e instanceof Error ? e.message : String(e) });
+    }
+
+    // ── Step 12: Remove paused-session metadata (#1383) ──
+    try {
+      const pausedPath = join(gsdRoot(s.originalBasePath || s.basePath), "runtime", "paused-session.json");
+      if (existsSync(pausedPath)) unlinkSync(pausedPath);
+    } catch { /* non-fatal */ }
+
+    // ── Step 13: Restore original model (before reset clears IDs) ──
+    try {
+      if (pi && ctx && s.originalModelId && s.originalModelProvider) {
+        const original = ctx.modelRegistry.find(
+          s.originalModelProvider,
+          s.originalModelId,
+        );
+        if (original) await pi.setModel(original);
+      }
+    } catch (e) {
+      debugLog("stop-cleanup-model", { error: e instanceof Error ? e.message : String(e) });
+    }
+  } finally {
+    // ── Critical invariants: these MUST execute regardless of errors ──
+    // External cleanup (not covered by session reset)
+    clearInFlightTools();
+    clearSliceProgressCache();
+    clearActivityLogState();
+    resetProactiveHealing();
+
+    // UI cleanup
+    ctx?.ui.setStatus("gsd-auto", undefined);
+    ctx?.ui.setWidget("gsd-progress", undefined);
+    ctx?.ui.setFooter(undefined);
+
+    // Reset all session state in one call
+    s.reset();
   }
-
-  s.cmdCtx = null;
 }
 
 /**
@@ -736,7 +825,7 @@ function buildLoopDeps(): LoopDeps {
     checkResourcesStale,
 
     // Session lock
-    validateSessionLock,
+    validateSessionLock: getSessionLockStatus,
     updateSessionLock,
     handleLostSessionLock,
 

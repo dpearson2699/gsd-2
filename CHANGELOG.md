@@ -6,6 +6,36 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.38.0] - 2026-03-20
+
+### Added
+- **gsd**: ADR-004 — derived-graph reactive task execution (#1546)
+- add anthropic-vertex provider for Claude on Vertex AI (#1533)
+
+### Fixed
+- **ci**: reduce GitHub Actions minutes ~60-70% (~10k → ~3-4k/month) (#1552)
+- **gsd**: reactive batch verification + dependency-based carry-forward (#1549)
+- **gsd**: enforce backtick file paths in task plan IO sections (#1548)
+
+## [2.37.1] - 2026-03-20
+
+### Fixed
+- interactive guard menu for remote auto-mode sessions (#1507) (#1524)
+- use pull_request_target so AI triage has secret access on PRs
+- cmux library directory incorrectly loaded as extension (#1537)
+- separate pi-tui-dependent layout utils to fix report generation (#1527)
+- clarify session lock loss diagnostics (#1535)
+- **#1526**: auto-mode worktree commits land on main instead of milestone branch (#1534)
+
+## [2.37.0] - 2026-03-20
+
+### Added
+- **dashboard**: two-column layout with redesigned widget (#1530)
+- integrate cmux with gsd runtime (#1532)
+
+### Fixed
+- add session-level search budget to prevent unbounded native web search (#1309) (#1529)
+
 ## [2.36.0] - 2026-03-20
 
 ### Added
@@ -1400,7 +1430,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - License updated to MIT
 
-[Unreleased]: https://github.com/gsd-build/gsd-2/compare/v2.36.0...HEAD
+[Unreleased]: https://github.com/gsd-build/gsd-2/compare/v2.38.0...HEAD
+[2.38.0]: https://github.com/gsd-build/gsd-2/compare/v2.37.1...v2.38.0
+[2.37.1]: https://github.com/gsd-build/gsd-2/compare/v2.37.0...v2.37.1
+[2.37.0]: https://github.com/gsd-build/gsd-2/compare/v2.36.0...v2.37.0
 [2.36.0]: https://github.com/gsd-build/gsd-2/compare/v2.35.0...v2.36.0
 [2.35.0]: https://github.com/gsd-build/gsd-2/compare/v2.34.0...v2.35.0
 [2.34.0]: https://github.com/gsd-build/gsd-2/compare/v2.33.1...v2.34.0

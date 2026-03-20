@@ -10,12 +10,14 @@ import { existsSync, readFileSync, readdirSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { gsdRoot } from "./paths.js";
+
+const gsdHome = process.env.GSD_HOME || join(homedir(), ".gsd");
 import { enableDebug } from "./debug-logger.js";
 import { deriveState } from "./state.js";
 import { GSDDashboardOverlay } from "./dashboard-overlay.js";
 import { GSDVisualizerOverlay } from "./visualizer-overlay.js";
 import { showQueue, showDiscuss, showHeadlessMilestoneCreation } from "./guided-flow.js";
-import { startAuto, stopAuto, pauseAuto, isAutoActive, isAutoPaused, isStepMode, stopAutoRemote } from "./auto.js";
+import { startAuto, stopAuto, pauseAuto, isAutoActive, isAutoPaused, isStepMode, stopAutoRemote, checkRemoteAutoSession } from "./auto.js";
 import { dispatchDirectPhase } from "./auto-direct-dispatch.js";
 import { resolveProjectRoot } from "./worktree.js";
 import { assertSafeDirectory } from "./validate-directory.js";
@@ -50,6 +52,7 @@ import { handleLogs } from "./commands-logs.js";
 import { handleStart, handleTemplates, getTemplateCompletions } from "./commands-workflow-templates.js";
 import { readSessionLockData, isSessionLockProcessAlive } from "./session-lock.js";
 import { handleCmux } from "./commands-cmux.js";
+import { showNextAction } from "../shared/mod.js";
 
 
 /** Resolve the effective project root, accounting for worktree paths. */
@@ -72,41 +75,93 @@ export function projectRoot(): string {
 }
 
 /**
- * Check if another process holds the auto-mode session lock.
- * Returns the lock data if a remote session is alive, null otherwise.
+ * Guard against starting auto-mode when a remote session is already running.
+ * Returns true if the caller should proceed with startAuto, false if handled.
  */
-function getRemoteAutoSession(basePath: string): { pid: number } | null {
-  const lockData = readSessionLockData(basePath);
-  if (!lockData) return null;
-  if (lockData.pid === process.pid) return null;
-  if (!isSessionLockProcessAlive(lockData)) return null;
-  return { pid: lockData.pid };
-}
+async function guardRemoteSession(
+  ctx: ExtensionCommandContext,
+  pi: ExtensionAPI,
+): Promise<boolean> {
+  // Local session already active — proceed (startAuto handles re-entrant calls)
+  if (isAutoActive() || isAutoPaused()) return true;
 
-/**
- * Show a steering menu when auto-mode is running in another process.
- * Returns true if a remote session was detected (caller should return early).
- */
-function notifyRemoteAutoActive(ctx: ExtensionCommandContext, basePath: string): boolean {
-  const remote = getRemoteAutoSession(basePath);
-  if (!remote) return false;
-  ctx.ui.notify(
-    `Auto-mode is running in another process (PID ${remote.pid}).\n` +
-    `Use these commands to interact with it:\n` +
-    `  /gsd status   — check progress\n` +
-    `  /gsd discuss  — discuss architecture decisions\n` +
-    `  /gsd queue    — queue the next milestone\n` +
-    `  /gsd steer    — apply an override to active work\n` +
-    `  /gsd capture  — fire-and-forget thought\n` +
-    `  /gsd stop     — stop auto-mode`,
-    "warning",
-  );
-  return true;
+  const remote = checkRemoteAutoSession(projectRoot());
+  if (!remote.running || !remote.pid) return true;
+
+  const unitLabel = remote.unitType && remote.unitId
+    ? `${remote.unitType} (${remote.unitId})`
+    : "unknown unit";
+  const unitsMsg = remote.completedUnits != null
+    ? `${remote.completedUnits} units completed`
+    : "";
+
+  const choice = await showNextAction(ctx, {
+    title: `Auto-mode is running in another terminal (PID ${remote.pid})`,
+    summary: [
+      `Currently executing: ${unitLabel}`,
+      ...(unitsMsg ? [unitsMsg] : []),
+      ...(remote.startedAt ? [`Started: ${remote.startedAt}`] : []),
+    ],
+    actions: [
+      {
+        id: "status",
+        label: "View status",
+        description: "Show the current GSD progress dashboard.",
+        recommended: true,
+      },
+      {
+        id: "steer",
+        label: "Steer the session",
+        description: "Use /gsd steer <instruction> to redirect the running session.",
+      },
+      {
+        id: "stop",
+        label: "Stop remote session",
+        description: `Send SIGTERM to PID ${remote.pid} to stop it gracefully.`,
+      },
+      {
+        id: "force",
+        label: "Force start (steal lock)",
+        description: "Start a new session, terminating the existing one.",
+      },
+    ],
+    notYetMessage: "Run /gsd when ready.",
+  });
+
+  if (choice === "status") {
+    await handleStatus(ctx);
+    return false;
+  }
+  if (choice === "steer") {
+    ctx.ui.notify(
+      "Use /gsd steer <instruction> to redirect the running auto-mode session.\n" +
+      "Example: /gsd steer Use Postgres instead of SQLite",
+      "info",
+    );
+    return false;
+  }
+  if (choice === "stop") {
+    const result = stopAutoRemote(projectRoot());
+    if (result.found) {
+      ctx.ui.notify(`Sent stop signal to auto-mode session (PID ${result.pid}). It will shut down gracefully.`, "info");
+    } else if (result.error) {
+      ctx.ui.notify(`Failed to stop remote auto-mode: ${result.error}`, "error");
+    } else {
+      ctx.ui.notify("Remote session is no longer running.", "info");
+    }
+    return false;
+  }
+  if (choice === "force") {
+    return true; // Proceed — startAuto will steal the lock
+  }
+
+  // "not_yet" or escape
+  return false;
 }
 
 export function registerGSDCommand(pi: ExtensionAPI): void {
   pi.registerCommand("gsd", {
-    description: "GSD — Get Shit Done: /gsd help|start|templates|next|auto|stop|pause|status|visualize|queue|quick|capture|triage|dispatch|history|undo|skip|export|cleanup|mode|prefs|config|keys|hooks|run-hook|skill-health|doctor|forensics|changelog|migrate|remote|steer|knowledge|new-milestone|parallel|cmux|update",
+    description: "GSD — Get Shit Done: /gsd help|start|templates|next|auto|stop|pause|status|widget|visualize|queue|quick|capture|triage|dispatch|history|undo|rate|skip|export|cleanup|mode|prefs|config|keys|hooks|run-hook|skill-health|doctor|logs|forensics|changelog|migrate|remote|steer|knowledge|new-milestone|parallel|cmux|park|unpark|init|setup|inspect|extensions|update",
     getArgumentCompletions: (prefix: string) => {
       const subcommands = [
         { cmd: "help", desc: "Categorized command reference with descriptions" },
@@ -157,7 +212,11 @@ export function registerGSDCommand(pi: ExtensionAPI): void {
         { cmd: "templates", desc: "List available workflow templates" },
         { cmd: "extensions", desc: "Manage extensions (list, enable, disable, info)" },
       ];
+      const hasTrailingSpace = prefix.endsWith(" ");
       const parts = prefix.trim().split(/\s+/);
+      if (hasTrailingSpace && parts.length >= 1) {
+        parts.push("");
+      }
 
       if (parts.length <= 1) {
         return subcommands
@@ -425,7 +484,7 @@ export function registerGSDCommand(pi: ExtensionAPI): void {
         if (parts.length === 3 && ["enable", "disable", "info"].includes(parts[1])) {
           const idPrefix = parts[2] ?? "";
           try {
-            const extDir = join(homedir(), ".gsd", "agent", "extensions");
+            const extDir = join(gsdHome, "agent", "extensions");
             const ids: { id: string; name: string }[] = [];
             for (const entry of readdirSync(extDir, { withFileTypes: true })) {
               if (!entry.isDirectory()) continue;
@@ -456,6 +515,10 @@ export function registerGSDCommand(pi: ExtensionAPI): void {
           { cmd: "fix", desc: "Auto-fix detected issues" },
           { cmd: "heal", desc: "AI-driven deep healing" },
           { cmd: "audit", desc: "Run health audit without fixing" },
+          { cmd: "--dry-run", desc: "Show what --fix would change without applying" },
+          { cmd: "--json", desc: "Output report as JSON (CI/tooling friendly)" },
+          { cmd: "--build", desc: "Include slow build health check (npm run build)" },
+          { cmd: "--test", desc: "Include slow test health check (npm test)" },
         ];
 
         if (parts.length <= 2) {
@@ -481,6 +544,18 @@ export function registerGSDCommand(pi: ExtensionAPI): void {
         return phases
           .filter((p) => p.cmd.startsWith(phasePrefix))
           .map((p) => ({ value: `dispatch ${p.cmd}`, label: p.cmd, description: p.desc }));
+      }
+
+      if (parts[0] === "rate" && parts.length <= 2) {
+        const tierPrefix = parts[1] ?? "";
+        const tiers = [
+          { cmd: "over", desc: "Model was overqualified for this task" },
+          { cmd: "ok", desc: "Model was appropriate for this task" },
+          { cmd: "under", desc: "Model was underqualified for this task" },
+        ];
+        return tiers
+          .filter((t) => t.cmd.startsWith(tierPrefix))
+          .map((t) => ({ value: `rate ${t.cmd}`, label: t.cmd, description: t.desc }));
       }
 
       return [];
@@ -598,10 +673,10 @@ export async function handleGSDCommand(
           await handleDryRun(ctx, projectRoot());
           return;
         }
-        if (notifyRemoteAutoActive(ctx, projectRoot())) return;
         const verboseMode = trimmed.includes("--verbose");
         const debugMode = trimmed.includes("--debug");
         if (debugMode) enableDebug(projectRoot());
+        if (!(await guardRemoteSession(ctx, pi))) return;
         await startAuto(ctx, pi, projectRoot(), verboseMode, { step: true });
         return;
       }
@@ -610,6 +685,7 @@ export async function handleGSDCommand(
         const verboseMode = trimmed.includes("--verbose");
         const debugMode = trimmed.includes("--debug");
         if (debugMode) enableDebug(projectRoot());
+        if (!(await guardRemoteSession(ctx, pi))) return;
         await startAuto(ctx, pi, projectRoot(), verboseMode);
         return;
       }
@@ -993,7 +1069,7 @@ Examples:
       }
 
       if (trimmed === "") {
-        if (notifyRemoteAutoActive(ctx, projectRoot())) return;
+        if (!(await guardRemoteSession(ctx, pi))) return;
         await startAuto(ctx, pi, projectRoot(), false, { step: true });
         return;
       }
