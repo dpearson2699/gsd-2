@@ -105,19 +105,22 @@ test("initResources prunes stale top-level .ts siblings next to bundled compiled
   const tmp = mkdtempSync(join(tmpdir(), "gsd-resource-loader-sync-"));
   const fakeAgentDir = join(tmp, "agent");
   const staleTsPath = join(fakeAgentDir, "extensions", "ask-user-questions.ts");
-  const bundledJsPath = join(fakeAgentDir, "extensions", "ask-user-questions.js");
+  const bundledTsPath = join(fakeAgentDir, "extensions", "ask-user-questions.ts");
 
   try {
     initResources(fakeAgentDir);
-    assert.equal(existsSync(bundledJsPath), true, "compiled bundled top-level extension should exist");
+    assert.equal(existsSync(bundledTsPath), true, "bundled top-level extension should exist");
 
-    writeFileSync(staleTsPath, "export {};\n");
-    assert.equal(existsSync(staleTsPath), true);
+    // Simulate a stale compiled sibling left from a previous sync/build mismatch.
+    const compiledSiblingPath = join(fakeAgentDir, "extensions", "ask-user-questions.js");
+    writeFileSync(compiledSiblingPath, "export {};\n");
+    assert.equal(existsSync(compiledSiblingPath), true);
 
     initResources(fakeAgentDir);
 
-    assert.equal(existsSync(staleTsPath), false, "stale .ts sibling should be removed during sync");
-    assert.equal(existsSync(bundledJsPath), true, "bundled .js extension should remain after cleanup");
+    assert.equal(existsSync(compiledSiblingPath), false, "stale compiled sibling should be removed during sync");
+    assert.equal(existsSync(bundledTsPath), true, "bundled extension should remain after cleanup");
+    assert.equal(existsSync(staleTsPath), true, "source-backed top-level extension remains present");
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

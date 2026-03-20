@@ -10,6 +10,7 @@ import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@g
 import { showNextAction } from "../shared/mod.js";
 import { loadFile, parseRoadmap } from "./files.js";
 import { loadPrompt, inlineTemplate } from "./prompt-loader.js";
+import { buildSkillActivationBlock } from "./auto-prompts.js";
 import { deriveState } from "./state.js";
 import { invalidateAllCaches } from "./cache.js";
 import { startAuto } from "./auto.js";
@@ -1052,7 +1053,16 @@ export async function showSmartEntry(
         ].join("\n\n---\n\n");
         const secretsOutputPath = relMilestoneFile(basePath, milestoneId, "SECRETS");
         dispatchWorkflow(pi, loadPrompt("guided-plan-milestone", {
-          milestoneId, milestoneTitle, secretsOutputPath, inlinedTemplates: planMilestoneTemplates,
+          milestoneId,
+          milestoneTitle,
+          secretsOutputPath,
+          inlinedTemplates: planMilestoneTemplates,
+          skillActivation: buildSkillActivationBlock({
+            base: basePath,
+            milestoneId,
+            milestoneTitle,
+            extraContext: [planMilestoneTemplates],
+          }),
         }));
       } else if (choice === "discuss") {
         const discussMilestoneTemplates = inlineTemplate("context", "Context");
@@ -1182,14 +1192,34 @@ export async function showSmartEntry(
         inlineTemplate("task-plan", "Task Plan"),
       ].join("\n\n---\n\n");
       dispatchWorkflow(pi, loadPrompt("guided-plan-slice", {
-        milestoneId, sliceId, sliceTitle, inlinedTemplates: planSliceTemplates,
+        milestoneId,
+        sliceId,
+        sliceTitle,
+        inlinedTemplates: planSliceTemplates,
+        skillActivation: buildSkillActivationBlock({
+          base: basePath,
+          milestoneId,
+          sliceId,
+          sliceTitle,
+          extraContext: [planSliceTemplates],
+        }),
       }));
     } else if (choice === "discuss") {
       dispatchWorkflow(pi, await buildDiscussSlicePrompt(milestoneId, sliceId, sliceTitle, basePath, { rediscuss: hasContext }));
     } else if (choice === "research") {
       const researchTemplates = inlineTemplate("research", "Research");
       dispatchWorkflow(pi, loadPrompt("guided-research-slice", {
-        milestoneId, sliceId, sliceTitle, inlinedTemplates: researchTemplates,
+        milestoneId,
+        sliceId,
+        sliceTitle,
+        inlinedTemplates: researchTemplates,
+        skillActivation: buildSkillActivationBlock({
+          base: basePath,
+          milestoneId,
+          sliceId,
+          sliceTitle,
+          extraContext: [researchTemplates],
+        }),
       }));
     } else if (choice === "status") {
       const { fireStatusViaCommand } = await import("./commands.js");
@@ -1233,7 +1263,11 @@ export async function showSmartEntry(
         inlineTemplate("uat", "UAT"),
       ].join("\n\n---\n\n");
       dispatchWorkflow(pi, loadPrompt("guided-complete-slice", {
-        workingDirectory: basePath, milestoneId, sliceId, sliceTitle, inlinedTemplates: completeSliceTemplates,
+        workingDirectory: basePath,
+        milestoneId,
+        sliceId,
+        sliceTitle,
+        inlinedTemplates: completeSliceTemplates,
       }));
     } else if (choice === "status") {
       const { fireStatusViaCommand } = await import("./commands.js");
@@ -1298,12 +1332,30 @@ export async function showSmartEntry(
     if (choice === "execute") {
       if (hasInterrupted) {
         dispatchWorkflow(pi, loadPrompt("guided-resume-task", {
-          milestoneId, sliceId,
+          milestoneId,
+          sliceId,
+          skillActivation: buildSkillActivationBlock({
+            base: basePath,
+            milestoneId,
+            sliceId,
+          }),
         }));
       } else {
         const executeTaskTemplates = inlineTemplate("task-summary", "Task Summary");
         dispatchWorkflow(pi, loadPrompt("guided-execute-task", {
-          milestoneId, sliceId, taskId, taskTitle, inlinedTemplates: executeTaskTemplates,
+          milestoneId,
+          sliceId,
+          taskId,
+          taskTitle,
+          inlinedTemplates: executeTaskTemplates,
+          skillActivation: buildSkillActivationBlock({
+            base: basePath,
+            milestoneId,
+            sliceId,
+            taskId,
+            taskTitle,
+            extraContext: [executeTaskTemplates],
+          }),
         }));
       }
     } else if (choice === "status") {
