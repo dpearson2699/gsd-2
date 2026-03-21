@@ -1236,6 +1236,133 @@ function ensurePreconditions(
   }
 }
 
+export async function dispatchHookUnit(
+  ctx: ExtensionContext,
+  pi: ExtensionAPI,
+  hookName: string,
+  triggerUnitType: string,
+  triggerUnitId: string,
+  hookPrompt: string,
+  hookModel: string | undefined,
+  targetBasePath: string,
+): Promise<boolean> {
+  if (!s.active) {
+    s.active = true;
+    s.stepMode = true;
+    s.cmdCtx = ctx as ExtensionCommandContext;
+    s.basePath = targetBasePath;
+    s.autoStartTime = Date.now();
+    s.currentUnit = null;
+    s.completedUnits = [];
+    s.pendingQuickTasks = [];
+  }
+
+  const hookUnitType = `hook/${hookName}`;
+  const hookStartedAt = Date.now();
+
+  s.currentUnit = {
+    type: triggerUnitType,
+    id: triggerUnitId,
+    startedAt: hookStartedAt,
+  };
+
+  const result = await s.cmdCtx!.newSession();
+  if (result.cancelled) {
+    await stopAuto(ctx, pi);
+    return false;
+  }
+
+  s.currentUnit = {
+    type: hookUnitType,
+    id: triggerUnitId,
+    startedAt: hookStartedAt,
+  };
+
+  writeUnitRuntimeRecord(
+    s.basePath,
+    hookUnitType,
+    triggerUnitId,
+    hookStartedAt,
+    {
+      phase: "dispatched",
+      wrapupWarningSent: false,
+      timeoutAt: null,
+      lastProgressAt: hookStartedAt,
+      progressCount: 0,
+      lastProgressKind: "dispatch",
+    },
+  );
+
+  if (hookModel) {
+    const availableModels = ctx.modelRegistry.getAvailable();
+    const match = availableModels.find(
+      (m) => m.id === hookModel || `${m.provider}/${m.id}` === hookModel,
+    );
+    if (match) {
+      try {
+        await pi.setModel(match);
+      } catch {
+        /* non-fatal */
+      }
+    }
+  }
+
+  const sessionFile = ctx.sessionManager.getSessionFile();
+  writeLock(
+    lockBase(),
+    hookUnitType,
+    triggerUnitId,
+    s.completedUnits.length,
+    sessionFile,
+  );
+
+  clearUnitTimeout();
+  const supervisor = resolveAutoSupervisorConfig();
+  const hookHardTimeoutMs = (supervisor.hard_timeout_minutes ?? 30) * 60 * 1000;
+  s.unitTimeoutHandle = setTimeout(async () => {
+    s.unitTimeoutHandle = null;
+    if (!s.active) return;
+    if (s.currentUnit) {
+      writeUnitRuntimeRecord(
+        s.basePath,
+        hookUnitType,
+        triggerUnitId,
+        hookStartedAt,
+        {
+          phase: "timeout",
+          timeoutAt: Date.now(),
+        },
+      );
+    }
+    ctx.ui.notify(
+      `Hook ${hookName} exceeded ${supervisor.hard_timeout_minutes ?? 30}min timeout. Pausing auto-mode.`,
+      "warning",
+    );
+    resetHookState();
+    await pauseAuto(ctx, pi);
+  }, hookHardTimeoutMs);
+
+  ctx.ui.setStatus("gsd-auto", s.stepMode ? "next" : "auto");
+  ctx.ui.notify(`Running post-unit hook: ${hookName}`, "info");
+
+  // Ensure cwd matches basePath before hook dispatch (#1389)
+  try { if (process.cwd() !== s.basePath) process.chdir(s.basePath); } catch {}
+
+  debugLog("dispatchHookUnit", {
+    phase: "send-message",
+    promptLength: hookPrompt.length,
+  });
+  pi.sendMessage(
+    { customType: "gsd-auto", content: hookPrompt, display: true },
+    { triggerTurn: true },
+  );
+
+  return true;
+}
+
+// Direct phase dispatch → auto-direct-dispatch.ts
+export { dispatchDirectPhase } from "./auto-direct-dispatch.js";
+
 // Re-export recovery functions for external consumers
 export {
   resolveExpectedArtifactPath,

@@ -15,7 +15,6 @@ import { deriveState } from "./state.js";
 import { invalidateAllCaches } from "./cache.js";
 import { startAuto } from "./auto.js";
 import { clearLock } from "./crash-recovery.js";
-import { gsdRoot } from "./paths.js";
 import {
   assessInterruptedSession,
   formatInterruptedSessionRunningMessage,
