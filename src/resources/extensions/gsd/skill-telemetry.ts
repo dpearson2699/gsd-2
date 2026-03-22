@@ -29,8 +29,15 @@ const activelyLoadedSkills = new Set<string>();
  * Capture the list of available skill names at dispatch time.
  * Called before each unit starts.
  */
-export function captureAvailableSkills(systemPrompt: string): void {
-  availableSkills = extractAvailableSkillNames(systemPrompt);
+export function captureAvailableSkills(): void {
+  const skillsDir = join(homedir(), ".agents", "skills");
+  const legacyDir = join(homedir(), ".gsd", "agent", "skills");
+  const names = listSkillNames(skillsDir);
+  // Include skills still in the legacy directory only if migration hasn't completed
+  const legacyMigrated = existsSync(join(legacyDir, ".migrated-to-agents"));
+  const legacyNames = legacyMigrated ? [] : listSkillNames(legacyDir);
+  const all = new Set([...names, ...legacyNames]);
+  availableSkills = [...all];
   activelyLoadedSkills.clear();
 }
 
@@ -99,9 +106,12 @@ export function detectStaleSkills(
   const stale: string[] = [];
 
   // Check all installed skills, not just those with usage data
-  const installed = loadSkills({ cwd: basePath }).skills
-    .filter((skill) => !skill.disableModelInvocation)
-    .map((skill) => skill.name);
+  const skillsDir = join(homedir(), ".agents", "skills");
+  const legacyDir = join(homedir(), ".gsd", "agent", "skills");
+  const legacyMigrated = existsSync(join(legacyDir, ".migrated-to-agents"));
+  const legacyNames = legacyMigrated ? [] : listSkillNames(legacyDir);
+  const installedSet = new Set([...listSkillNames(skillsDir), ...legacyNames]);
+  const installed = [...installedSet];
 
   for (const skill of installed) {
     const lastTs = lastUsed.get(skill);

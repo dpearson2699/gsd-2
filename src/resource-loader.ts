@@ -377,6 +377,10 @@ export function initResources(agentDir: string): void {
   // extensions fail to resolve @gsd/* packages, rendering GSD non-functional.
   ensureNodeModulesSymlink(agentDir)
 
+  // Migrate legacy skills on every launch (not gated by manifest) so that
+  // partial-failure retries don't wait for a version bump.
+  migrateSkillsToEcosystemDir(agentDir)
+
   // Skip the full copy when both version AND content fingerprint match.
   // Version-only checks miss same-version content changes (npm link dev workflow,
   // hotfixes within a release). The content hash catches those at ~1ms cost.
@@ -397,9 +401,9 @@ export function initResources(agentDir: string): void {
   // skills.sh CLI (`npx skills add <repo>`) into ~/.agents/skills/ which
   // is the industry-standard Agent Skills ecosystem directory.
   //
-  // Migrate any user-customized skills from the legacy ~/.gsd/agent/skills/
-  // directory into ~/.agents/skills/ so they aren't silently lost on upgrade.
-  migrateSkillsToEcosystemDir(agentDir)
+  // Migration from the legacy ~/.gsd/agent/skills/ directory is handled
+  // above the manifest check so it runs on every launch (including retries
+  // after partial copy failures).
 
   // Sync GSD-WORKFLOW.md to agentDir as a fallback for when GSD_WORKFLOW_PATH
   // env var is not set (e.g. fork/dev builds, alternative entry points).
@@ -454,6 +458,7 @@ function migrateSkillsToEcosystemDir(agentDir: string): void {
 
     const entries = readdirSync(legacyDir, { withFileTypes: true })
     let migrated = 0
+    let candidates = 0
     for (const entry of entries) {
       // Handle both real directories and symlinks pointing to directories
       const isDir = entry.isDirectory()
@@ -478,11 +483,16 @@ function migrateSkillsToEcosystemDir(agentDir: string): void {
       const target = join(ecosystemDir, entry.name)
       if (existsSync(target)) continue // ecosystem version wins
 
+      candidates++
       try {
         if (isSymlink) {
-          // Recreate the symlink in the ecosystem directory
-          const linkTarget = readlinkSync(sourcePath)
-          symlinkSync(linkTarget, target)
+          // Recreate the symlink in the ecosystem directory using an absolute
+          // target. Relative symlinks would resolve from the new parent dir
+          // (~/.agents/skills/) instead of the original (~/.gsd/agent/skills/),
+          // pointing to the wrong location.
+          const rawTarget = readlinkSync(sourcePath)
+          const absTarget = resolve(dirname(sourcePath), rawTarget)
+          symlinkSync(absTarget, target)
         } else {
           cpSync(sourcePath, target, { recursive: true })
         }
@@ -490,6 +500,15 @@ function migrateSkillsToEcosystemDir(agentDir: string): void {
       } catch {
         // non-fatal — skip this skill
       }
+    }
+
+    // If any skills failed to copy, remove the marker so migration retries
+    // on the next launch.  This keeps the legacy dir as fallback until every
+    // skill has been successfully migrated.
+    if (migrated < candidates) {
+      try { closeSync(markerFd); markerFd = -1 } catch { /* non-fatal */ }
+      try { unlinkSync(markerPath) } catch { /* non-fatal */ }
+      return
     }
 
     // Write migration info to the marker

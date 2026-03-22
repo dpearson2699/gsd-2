@@ -426,9 +426,9 @@ export function loadSkills(options: LoadSkillsOptions = {}): LoadSkillsResult {
 
 		// Legacy fallback: read skills from ~/.gsd/agent/skills/ so existing
 		// installs keep working until the one-time migration in resource-loader
-		// copies them to ~/.agents/skills/. Collision dedup above means already-
-		// migrated skills won't load twice.
-		if (LEGACY_SKILLS_DIR !== ECOSYSTEM_SKILLS_DIR && existsSync(LEGACY_SKILLS_DIR)) {
+		// copies them to ~/.agents/skills/. Skip if migration has completed.
+		const legacyMigrated = existsSync(join(LEGACY_SKILLS_DIR, ".migrated-to-agents"));
+		if (LEGACY_SKILLS_DIR !== ECOSYSTEM_SKILLS_DIR && existsSync(LEGACY_SKILLS_DIR) && !legacyMigrated) {
 			addSkills(loadSkillsFromDirInternal(LEGACY_SKILLS_DIR, "user", true));
 		}
 	}
