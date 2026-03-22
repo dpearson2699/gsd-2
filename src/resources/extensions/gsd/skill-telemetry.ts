@@ -13,6 +13,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { getAgentDir, loadSkills } from "@gsd/pi-coding-agent";
 
 // ─── In-memory state ──────────────────────────────────────────────────────────
@@ -29,15 +30,19 @@ const activelyLoadedSkills = new Set<string>();
  * Capture the list of available skill names at dispatch time.
  * Called before each unit starts.
  */
-export function captureAvailableSkills(): void {
-  const skillsDir = join(homedir(), ".agents", "skills");
-  const legacyDir = join(homedir(), ".gsd", "agent", "skills");
-  const names = listSkillNames(skillsDir);
-  // Include skills still in the legacy directory only if migration hasn't completed
-  const legacyMigrated = existsSync(join(legacyDir, ".migrated-to-agents"));
-  const legacyNames = legacyMigrated ? [] : listSkillNames(legacyDir);
-  const all = new Set([...names, ...legacyNames]);
-  availableSkills = [...all];
+export function captureAvailableSkills(systemPrompt?: string): void {
+  if (systemPrompt) {
+    // Extract skill names from the rendered system prompt XML tags
+    availableSkills = extractAvailableSkillNames(systemPrompt);
+  } else {
+    // Fallback: scan filesystem for installed skills
+    const skillsDir = join(homedir(), ".agents", "skills");
+    const legacyDir = join(homedir(), ".gsd", "agent", "skills");
+    const names = listSkillNames(skillsDir);
+    const legacyMigrated = existsSync(join(legacyDir, ".migrated-to-agents"));
+    const legacyNames = legacyMigrated ? [] : listSkillNames(legacyDir);
+    availableSkills = [...new Set([...names, ...legacyNames])];
+  }
   activelyLoadedSkills.clear();
 }
 
@@ -124,6 +129,19 @@ export function detectStaleSkills(
 }
 
 // ─── Internals ────────────────────────────────────────────────────────────────
+
+function listSkillNames(skillsDir: string): string[] {
+  if (!existsSync(skillsDir)) return [];
+  try {
+    return readdirSync(skillsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory() && !d.name.startsWith("."))
+      .filter(d => existsSync(join(skillsDir, d.name, "SKILL.md")))
+      .map(d => d.name);
+  } catch {
+    return [];
+  }
+}
+
 function extractAvailableSkillNames(systemPrompt: string): string[] {
   const names = new Set<string>();
   for (const tag of ["available_skills", "newly_discovered_skills"]) {
