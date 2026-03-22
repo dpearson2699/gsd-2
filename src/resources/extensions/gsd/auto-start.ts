@@ -20,7 +20,7 @@ import {
   resolveSkillDiscoveryMode,
   getIsolationMode,
 } from "./preferences.js";
-import { ensureGsdSymlink, validateProjectId } from "./repo-identity.js";
+import { ensureGsdSymlink, isInheritedRepo, validateProjectId } from "./repo-identity.js";
 import { migrateToExternalState, recoverFailedMigration } from "./migrate-external.js";
 import { collectSecretsFromManifest } from "../get-secrets-from-user.js";
 import { gsdRoot, resolveMilestoneFile, milestonesDir } from "./paths.js";
@@ -56,7 +56,7 @@ import { readResourceVersion } from "./auto-worktree-sync.js";
 import { initMetrics } from "./metrics.js";
 import { initRoutingHistory } from "./routing-history.js";
 import { restoreHookState, resetHookState } from "./post-unit-hooks.js";
-import { resetProactiveHealing } from "./doctor-proactive.js";
+import { resetProactiveHealing, setLevelChangeCallback } from "./doctor-proactive.js";
 import { snapshotSkills } from "./skill-discovery.js";
 import { isDbAvailable } from "./gsd-db.js";
 import { hideFooter } from "./auto-dashboard.js";
@@ -140,8 +140,13 @@ export async function bootstrapAutoSession(
       return releaseLockAndReturn();
     }
 
-    // Ensure git repo exists
-    if (!nativeIsRepo(base)) {
+    // Ensure git repo exists.
+    // Guard against inherited repos: if `base` is a subdirectory of another
+    // git repo that has no .gsd (i.e. the parent project was never initialised
+    // with GSD), create a fresh git repo at `base` so it gets its own identity
+    // hash. Without this, repoIdentity() resolves to the parent repo's hash
+    // and loads milestones from an unrelated project (#1639).
+    if (!nativeIsRepo(base) || isInheritedRepo(base)) {
       const mainBranch =
         loadEffectiveGSDPreferences()?.preferences?.git?.main_branch || "main";
       nativeInit(base, mainBranch);
@@ -299,7 +304,7 @@ export async function bootstrapAutoSession(
     let hasSurvivorBranch = false;
     if (
       state.activeMilestone &&
-      (state.phase === "pre-planning" || state.phase === "needs-discussion") &&
+      state.phase === "pre-planning" &&
       shouldUseWorktreeIsolation() &&
       !detectWorktreeName(base) &&
       !base.includes(`${pathSep}.gsd${pathSep}worktrees${pathSep}`)
@@ -312,6 +317,32 @@ export async function bootstrapAutoSession(
           `Found prior session branch ${milestoneBranch}. Resuming.`,
           "info",
         );
+      }
+    }
+
+    // Survivor branch exists but milestone still needs discussion (#1726):
+    // The worktree/branch was created but the milestone only has CONTEXT-DRAFT.md.
+    // Route to the interactive discussion handler instead of falling through to
+    // auto-mode, which would immediately stop with "needs discussion".
+    if (hasSurvivorBranch && state.phase === "needs-discussion") {
+      const { showSmartEntry } = await import("./guided-flow.js");
+      await showSmartEntry(ctx, pi, base, { step: requestedStepMode });
+
+      invalidateAllCaches();
+      const postState = await deriveState(base);
+      if (
+        postState.activeMilestone &&
+        postState.phase !== "needs-discussion"
+      ) {
+        state = postState;
+        // Discussion succeeded — clear survivor flag so normal flow continues
+        hasSurvivorBranch = false;
+      } else {
+        ctx.ui.notify(
+          "Discussion completed but milestone draft was not promoted. Run /gsd to try again.",
+          "warning",
+        );
+        return releaseLockAndReturn();
       }
     }
 
@@ -390,6 +421,27 @@ export async function bootstrapAutoSession(
           }
         }
       }
+
+      // Active milestone has CONTEXT-DRAFT but no full context — needs discussion
+      if (state.phase === "needs-discussion") {
+        const { showSmartEntry } = await import("./guided-flow.js");
+        await showSmartEntry(ctx, pi, base, { step: requestedStepMode });
+
+        invalidateAllCaches();
+        const postState = await deriveState(base);
+        if (
+          postState.activeMilestone &&
+          postState.phase !== "needs-discussion"
+        ) {
+          state = postState;
+        } else {
+          ctx.ui.notify(
+            "Discussion completed but milestone draft was not promoted. Run /gsd to try again.",
+            "warning",
+          );
+          return releaseLockAndReturn();
+        }
+      }
     }
 
     // Unreachable safety check
@@ -415,6 +467,11 @@ export async function bootstrapAutoSession(
     resetHookState();
     restoreHookState(base);
     resetProactiveHealing();
+    // Notify user on health level transitions (green→yellow→red and back)
+    setLevelChangeCallback((_from, to, summary) => {
+      const level = to === "red" ? "error" : to === "yellow" ? "warning" : "info";
+      ctx.ui.notify(summary, level as "info" | "warning" | "error");
+    });
     s.autoStartTime = Date.now();
     s.resourceVersionOnStart = readResourceVersion();
     s.completedUnits = [];

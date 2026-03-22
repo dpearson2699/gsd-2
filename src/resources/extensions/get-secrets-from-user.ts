@@ -13,7 +13,8 @@ import { resolve } from "node:path";
 import type { ExtensionAPI, Theme } from "@gsd/pi-coding-agent";
 import { Editor, type EditorTheme, Key, matchesKey, Text, truncateToWidth, wrapTextWithAnsi } from "@gsd/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { makeUI, maskEditorLine, type ProgressStatus } from "./shared/mod.js";
+import { makeUI } from "./shared/tui.js";
+import { maskEditorLine, type ProgressStatus } from "./shared/mod.js";
 import { parseSecretsManifest, formatSecretsManifest } from "./gsd/files.js";
 import { resolveMilestoneFile } from "./gsd/paths.js";
 import type { SecretsManifestEntry } from "./gsd/types.js";
@@ -70,7 +71,7 @@ async function writeEnvKey(filePath: string, key: string, value: string): Promis
 // Re-export from env-utils.ts so existing consumers still work.
 // The implementation lives in env-utils.ts to avoid pulling @gsd/pi-tui
 // into modules that only need env-checking (e.g. files.ts during reports).
-import { checkExistingEnvKeys } from "./env-utils.js";
+import { checkExistingEnvKeys } from "./gsd/env-utils.js";
 export { checkExistingEnvKeys };
 
 /**
@@ -234,7 +235,7 @@ export async function showSecretsSummary(
 
 	const existingSet = new Set(existingKeys);
 
-	await ctx.ui.custom((tui: any, theme: Theme, _kb: any, done: (r: null) => void) => {
+	await ctx.ui.custom((_tui: any, theme: Theme, _kb: any, done: (r: null) => void) => {
 		let cachedLines: string[] | undefined;
 
 		function handleInput(_data: string) {

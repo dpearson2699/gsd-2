@@ -29,6 +29,7 @@ import {
 	matchesKey,
 	ProcessTerminal,
 	Spacer,
+	type Terminal as TuiTerminal,
 	Text,
 	TruncatedText,
 	TUI,
@@ -89,6 +90,15 @@ import { TreeSelectorComponent } from "./components/tree-selector.js";
 import { UserMessageComponent } from "./components/user-message.js";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.js";
 import { type SlashCommandContext, dispatchSlashCommand, getAppKeyDisplay } from "./slash-command-handlers.js";
+import { handleAgentEvent } from "./controllers/chat-controller.js";
+import { createExtensionUIContext as buildExtensionUIContext } from "./controllers/extension-ui-controller.js";
+import { setupEditorSubmitHandler as setupEditorSubmitHandlerController } from "./controllers/input-controller.js";
+import {
+	findExactModelMatch as findExactModelMatchController,
+	getModelCandidates as getModelCandidatesController,
+	handleModelCommand as handleModelCommandController,
+	updateAvailableProviderCount as updateAvailableProviderCountController,
+} from "./controllers/model-controller.js";
 import {
 	getAvailableThemes,
 	getAvailableThemesWithPaths,
@@ -135,6 +145,14 @@ export interface InteractiveModeOptions {
 	initialMessages?: string[];
 	/** Force verbose startup (overrides quietStartup setting) */
 	verbose?: boolean;
+	/** Override the terminal implementation used by the TUI. */
+	terminal?: TuiTerminal;
+	/** When false, reuse the session's existing extension bindings instead of rebinding them for TUI mode. */
+	bindExtensions?: boolean;
+	/** Submit editor prompts directly to AgentSession instead of using the interactive prompt loop. */
+	submitPromptsDirectly?: boolean;
+	/** Control what happens when the user requests shutdown from the TUI. */
+	shutdownBehavior?: "exit_process" | "stop_ui" | "ignore";
 }
 
 export class InteractiveMode {
@@ -248,7 +266,7 @@ export class InteractiveMode {
 	) {
 		this.session = session;
 		this.version = VERSION;
-		this.ui = new TUI(new ProcessTerminal(), this.settingsManager.getShowHardwareCursor());
+		this.ui = new TUI(options.terminal ?? new ProcessTerminal(), this.settingsManager.getShowHardwareCursor());
 		this.ui.setClearOnShrink(this.settingsManager.getClearOnShrink());
 		this.headerContainer = new Container();
 		this.chatContainer = new Container();
@@ -1077,89 +1095,91 @@ export class InteractiveMode {
 	 * Initialize the extension system with TUI-based UI context.
 	 */
 	private async initExtensions(): Promise<void> {
-		const uiContext = this.createExtensionUIContext();
-		await this.session.bindExtensions({
-			uiContext,
-			commandContextActions: {
-				waitForIdle: () => this.session.agent.waitForIdle(),
-				newSession: async (options) => {
-					if (this.loadingAnimation) {
-						this.loadingAnimation.stop();
-						this.loadingAnimation = undefined;
-					}
-					this.statusContainer.clear();
+		if (this.options.bindExtensions !== false) {
+			const uiContext = this.createExtensionUIContext();
+			await this.session.bindExtensions({
+				uiContext,
+				commandContextActions: {
+					waitForIdle: () => this.session.agent.waitForIdle(),
+					newSession: async (options) => {
+						if (this.loadingAnimation) {
+							this.loadingAnimation.stop();
+							this.loadingAnimation = undefined;
+						}
+						this.statusContainer.clear();
 
-					// Delegate to AgentSession (handles setup + agent state sync)
-					const success = await this.session.newSession(options);
-					if (!success) {
-						return { cancelled: true };
-					}
+						// Delegate to AgentSession (handles setup + agent state sync)
+						const success = await this.session.newSession(options);
+						if (!success) {
+							return { cancelled: true };
+						}
 
-					// Clear UI state
-					this.chatContainer.clear();
-					this.pendingMessagesContainer.clear();
-					this.compactionQueuedMessages = [];
-					this.streamingComponent = undefined;
-					this.streamingMessage = undefined;
-					this.pendingTools.clear();
+						// Clear UI state
+						this.chatContainer.clear();
+						this.pendingMessagesContainer.clear();
+						this.compactionQueuedMessages = [];
+						this.streamingComponent = undefined;
+						this.streamingMessage = undefined;
+						this.pendingTools.clear();
 
-					// Render any messages added via setup, or show empty session
-					this.renderInitialMessages();
-					this.ui.requestRender();
+						// Render any messages added via setup, or show empty session
+						this.renderInitialMessages();
+						this.ui.requestRender();
 
-					return { cancelled: false };
+						return { cancelled: false };
+					},
+					fork: async (entryId) => {
+						const result = await this.session.fork(entryId);
+						if (result.cancelled) {
+							return { cancelled: true };
+						}
+
+						this.chatContainer.clear();
+						this.renderInitialMessages();
+						this.editor.setText(result.selectedText);
+						this.showStatus("Forked to new session");
+
+						return { cancelled: false };
+					},
+					navigateTree: async (targetId, options) => {
+						const result = await this.session.navigateTree(targetId, {
+							summarize: options?.summarize,
+							customInstructions: options?.customInstructions,
+							replaceInstructions: options?.replaceInstructions,
+							label: options?.label,
+						});
+						if (result.cancelled) {
+							return { cancelled: true };
+						}
+
+						this.chatContainer.clear();
+						this.renderInitialMessages();
+						if (result.editorText && !this.editor.getText().trim()) {
+							this.editor.setText(result.editorText);
+						}
+						this.showStatus("Navigated to selected point");
+
+						return { cancelled: false };
+					},
+					switchSession: async (sessionPath) => {
+						await this.handleResumeSession(sessionPath);
+						return { cancelled: false };
+					},
+					reload: async () => {
+						await this.handleReloadCommand();
+					},
 				},
-				fork: async (entryId) => {
-					const result = await this.session.fork(entryId);
-					if (result.cancelled) {
-						return { cancelled: true };
+				shutdownHandler: () => {
+					this.shutdownRequested = true;
+					if (!this.session.isStreaming) {
+						void this.shutdown();
 					}
-
-					this.chatContainer.clear();
-					this.renderInitialMessages();
-					this.editor.setText(result.selectedText);
-					this.showStatus("Forked to new session");
-
-					return { cancelled: false };
 				},
-				navigateTree: async (targetId, options) => {
-					const result = await this.session.navigateTree(targetId, {
-						summarize: options?.summarize,
-						customInstructions: options?.customInstructions,
-						replaceInstructions: options?.replaceInstructions,
-						label: options?.label,
-					});
-					if (result.cancelled) {
-						return { cancelled: true };
-					}
-
-					this.chatContainer.clear();
-					this.renderInitialMessages();
-					if (result.editorText && !this.editor.getText().trim()) {
-						this.editor.setText(result.editorText);
-					}
-					this.showStatus("Navigated to selected point");
-
-					return { cancelled: false };
+				onError: (error) => {
+					this.showExtensionError(error.extensionPath, error.error, error.stack);
 				},
-				switchSession: async (sessionPath) => {
-					await this.handleResumeSession(sessionPath);
-					return { cancelled: false };
-				},
-				reload: async () => {
-					await this.handleReloadCommand();
-				},
-			},
-			shutdownHandler: () => {
-				this.shutdownRequested = true;
-				if (!this.session.isStreaming) {
-					void this.shutdown();
-				}
-			},
-			onError: (error) => {
-				this.showExtensionError(error.extensionPath, error.error, error.stack);
-			},
-		});
+			});
+		}
 
 		setRegisteredThemes(this.session.resourceLoader.getThemes().themes);
 		this.setupAutocomplete();
@@ -1175,12 +1195,10 @@ export class InteractiveMode {
 	}
 
 	/**
-	 * Get a registered tool definition by name (for custom rendering).
+	 * Get a tool definition by name (for custom rendering).
 	 */
 	private getRegisteredToolDefinition(toolName: string) {
-		const tools = this.session.extensionRunner?.getAllRegisteredTools() ?? [];
-		const registeredTool = tools.find((t) => t.definition.name === toolName);
-		return registeredTool?.definition;
+		return this.session.getRenderableToolDefinition(toolName);
 	}
 
 	/**
@@ -1486,60 +1504,11 @@ export class InteractiveMode {
 	 * Create the ExtensionUIContext for extensions.
 	 */
 	private createExtensionUIContext(): ExtensionUIContext {
-		return {
-			select: (title, options, opts) => this.showExtensionSelector(title, options, opts),
-			confirm: (title, message, opts) => this.showExtensionConfirm(title, message, opts),
-			input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
-			notify: (message, type) => this.showExtensionNotify(message, type),
-			onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
-			setStatus: (key, text) => this.setExtensionStatus(key, text),
-			setWorkingMessage: (message) => {
-				if (this.loadingAnimation) {
-					if (message) {
-						this.loadingAnimation.setMessage(message);
-					} else {
-						this.loadingAnimation.setMessage(
-							`${this.defaultWorkingMessage} (${appKey(this.keybindings, "interrupt")} to interrupt)`,
-						);
-					}
-				} else {
-					// Queue message for when loadingAnimation is created (handles agent_start race)
-					this.pendingWorkingMessage = message;
-				}
-			},
-			setWidget: (key, content, options) => this.setExtensionWidget(key, content, options),
-			setFooter: (factory) => this.setExtensionFooter(factory),
-			setHeader: (factory) => this.setExtensionHeader(factory),
-			setTitle: (title) => this.ui.terminal.setTitle(title),
-			custom: (factory, options) => this.showExtensionCustom(factory, options),
-			pasteToEditor: (text) => this.editor.handleInput(`\x1b[200~${text}\x1b[201~`),
-			setEditorText: (text) => this.editor.setText(text),
-			getEditorText: () => this.editor.getText(),
-			editor: (title, prefill) => this.showExtensionEditor(title, prefill),
-			setEditorComponent: (factory) => this.setCustomEditorComponent(factory),
-			get theme() {
-				return theme;
-			},
-			getAllThemes: () => getAvailableThemesWithPaths(),
-			getTheme: (name) => getThemeByName(name),
-			setTheme: (themeOrName) => {
-				if (themeOrName instanceof Theme) {
-					setThemeInstance(themeOrName);
-					this.ui.requestRender();
-					return { success: true };
-				}
-				const result = setTheme(themeOrName, true);
-				if (result.success) {
-					if (this.settingsManager.getTheme() !== themeOrName) {
-						this.settingsManager.setTheme(themeOrName);
-					}
-					this.ui.requestRender();
-				}
-				return result;
-			},
-			getToolsExpanded: () => this.toolOutputExpanded,
-			setToolsExpanded: (expanded) => this.setToolsExpanded(expanded),
-		};
+		return buildExtensionUIContext(this);
+	}
+
+	getExtensionUIContext(): ExtensionUIContext {
+		return this.createExtensionUIContext();
 	}
 
 	/**
@@ -2017,69 +1986,7 @@ export class InteractiveMode {
 	}
 
 	private setupEditorSubmitHandler(): void {
-		this.defaultEditor.onSubmit = async (text: string) => {
-			text = text.trim();
-			if (!text) return;
-
-			// Handle slash commands
-			if (text.startsWith("/")) {
-				const handled = await dispatchSlashCommand(text, this.getSlashCommandContext());
-				if (handled) {
-					this.editor.setText("");
-					return;
-				}
-			}
-
-			// Handle bash command (! for normal, !! for excluded from context)
-			if (text.startsWith("!")) {
-				const isExcluded = text.startsWith("!!");
-				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
-				if (command) {
-					if (this.session.isBashRunning) {
-						this.showWarning("A bash command is already running. Press Esc to cancel it first.");
-						this.editor.setText(text);
-						return;
-					}
-					this.editor.addToHistory?.(text);
-					await this.handleBashCommand(command, isExcluded);
-					this.isBashMode = false;
-					this.updateEditorBorderColor();
-					return;
-				}
-			}
-
-			// Queue input during compaction (extension commands execute immediately)
-			if (this.session.isCompacting) {
-				if (this.isExtensionCommand(text)) {
-					this.editor.addToHistory?.(text);
-					this.editor.setText("");
-					await this.session.prompt(text);
-				} else {
-					this.queueCompactionMessage(text, "steer");
-				}
-				return;
-			}
-
-			// If streaming, use prompt() with steer behavior
-			// This handles extension commands (execute immediately), prompt template expansion, and queueing
-			if (this.session.isStreaming) {
-				this.editor.addToHistory?.(text);
-				this.editor.setText("");
-				await this.session.prompt(text, { streamingBehavior: "steer" });
-				this.updatePendingMessagesDisplay();
-				this.ui.requestRender();
-				return;
-			}
-
-			// Normal message submission
-			// First, move any pending bash components to chat
-			this.flushPendingBashComponents();
-
-			if (this.onInputCallback) {
-				this.onInputCallback(text);
-			}
-			this.editor.addToHistory?.(text);
-		};
+		setupEditorSubmitHandlerController(this as any);
 	}
 
 	private subscribeToAgent(): void {
@@ -2089,338 +1996,7 @@ export class InteractiveMode {
 	}
 
 	private async handleEvent(event: AgentSessionEvent): Promise<void> {
-		if (!this.isInitialized) {
-			await this.init();
-		}
-
-		this.footer.invalidate();
-
-		switch (event.type) {
-			case "agent_start":
-				// Restore main escape handler if retry handler is still active
-				// (retry success event fires later, but we need main handler now)
-				if (this.retryEscapeHandler) {
-					this.defaultEditor.onEscape = this.retryEscapeHandler;
-					this.retryEscapeHandler = undefined;
-				}
-				if (this.retryLoader) {
-					this.retryLoader.stop();
-					this.retryLoader = undefined;
-				}
-				if (this.loadingAnimation) {
-					this.loadingAnimation.stop();
-				}
-				this.statusContainer.clear();
-				this.loadingAnimation = new Loader(
-					this.ui,
-					(spinner) => theme.fg("accent", spinner),
-					(text) => theme.fg("muted", text),
-					this.defaultWorkingMessage,
-				);
-				this.statusContainer.addChild(this.loadingAnimation);
-				// Apply any pending working message queued before loader existed
-				if (this.pendingWorkingMessage !== undefined) {
-					if (this.pendingWorkingMessage) {
-						this.loadingAnimation.setMessage(this.pendingWorkingMessage);
-					}
-					this.pendingWorkingMessage = undefined;
-				}
-				this.ui.requestRender();
-				break;
-
-			case "message_start":
-				if (event.message.role === "custom") {
-					this.addMessageToChat(event.message);
-					this.ui.requestRender();
-				} else if (event.message.role === "user") {
-					this.addMessageToChat(event.message);
-					this.updatePendingMessagesDisplay();
-					this.ui.requestRender();
-				} else if (event.message.role === "assistant") {
-					this.streamingComponent = new AssistantMessageComponent(
-						undefined,
-						this.hideThinkingBlock,
-						this.getMarkdownThemeWithSettings(),
-					);
-					this.streamingMessage = event.message;
-					this.chatContainer.addChild(this.streamingComponent);
-					this.streamingComponent.updateContent(this.streamingMessage);
-					this.ui.requestRender();
-				}
-				break;
-
-			case "message_update":
-				if (this.streamingComponent && event.message.role === "assistant") {
-					this.streamingMessage = event.message;
-					this.streamingComponent.updateContent(this.streamingMessage);
-
-					for (const content of this.streamingMessage.content) {
-						if (content.type === "toolCall") {
-							if (!this.pendingTools.has(content.id)) {
-								const component = new ToolExecutionComponent(
-									content.name,
-									content.arguments,
-									{
-										showImages: this.settingsManager.getShowImages(),
-									},
-									this.getRegisteredToolDefinition(content.name),
-									this.ui,
-								);
-								component.setExpanded(this.toolOutputExpanded);
-								this.chatContainer.addChild(component);
-								this.pendingTools.set(content.id, component);
-							} else {
-								const component = this.pendingTools.get(content.id);
-								if (component) {
-									component.updateArgs(content.arguments);
-								}
-							}
-						} else if (content.type === "serverToolUse") {
-							// Server-side tool (e.g., native web search) — show as pending tool execution
-							if (!this.pendingTools.has(content.id)) {
-								const component = new ToolExecutionComponent(
-									content.name,
-									content.input ?? {},
-									{
-										showImages: this.settingsManager.getShowImages(),
-									},
-									undefined,
-									this.ui,
-								);
-								component.setExpanded(this.toolOutputExpanded);
-								this.chatContainer.addChild(component);
-								this.pendingTools.set(content.id, component);
-							}
-						} else if (content.type === "webSearchResult") {
-							// Server-side tool result — resolve the pending server tool execution
-							const component = this.pendingTools.get(content.toolUseId);
-							if (component) {
-								const searchContent = content.content;
-								const isError = searchContent && typeof searchContent === "object" && "type" in (searchContent as any) && (searchContent as any).type === "web_search_tool_result_error";
-								const resultText = this.formatWebSearchResult(searchContent);
-								component.updateResult({
-									content: [{ type: "text", text: resultText }],
-									isError: !!isError,
-								});
-								this.pendingTools.delete(content.toolUseId);
-							}
-						}
-					}
-					this.ui.requestRender();
-				}
-				break;
-
-			case "message_end":
-				if (event.message.role === "user") break;
-				if (this.streamingComponent && event.message.role === "assistant") {
-					this.streamingMessage = event.message;
-					let errorMessage: string | undefined;
-					if (this.streamingMessage.stopReason === "aborted") {
-						const retryAttempt = this.session.retryAttempt;
-						errorMessage =
-							retryAttempt > 0
-								? `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`
-								: "Operation aborted";
-						this.streamingMessage.errorMessage = errorMessage;
-					}
-					this.streamingComponent.updateContent(this.streamingMessage);
-
-					if (this.streamingMessage.stopReason === "aborted" || this.streamingMessage.stopReason === "error") {
-						if (!errorMessage) {
-							errorMessage = this.streamingMessage.errorMessage || "Error";
-						}
-						for (const [, component] of this.pendingTools.entries()) {
-							component.updateResult({
-								content: [{ type: "text", text: errorMessage }],
-								isError: true,
-							});
-						}
-						this.pendingTools.clear();
-					} else {
-						// Args are now complete - trigger diff computation for edit tools
-						for (const [, component] of this.pendingTools.entries()) {
-							component.setArgsComplete();
-						}
-					}
-					this.streamingComponent = undefined;
-					this.streamingMessage = undefined;
-					this.footer.invalidate();
-				}
-				this.ui.requestRender();
-				break;
-
-			case "tool_execution_start": {
-				if (!this.pendingTools.has(event.toolCallId)) {
-					const component = new ToolExecutionComponent(
-						event.toolName,
-						event.args,
-						{
-							showImages: this.settingsManager.getShowImages(),
-						},
-						this.getRegisteredToolDefinition(event.toolName),
-						this.ui,
-					);
-					component.setExpanded(this.toolOutputExpanded);
-					this.chatContainer.addChild(component);
-					this.pendingTools.set(event.toolCallId, component);
-					this.ui.requestRender();
-				}
-				break;
-			}
-
-			case "tool_execution_update": {
-				const component = this.pendingTools.get(event.toolCallId);
-				if (component) {
-					component.updateResult({ ...event.partialResult, isError: false }, true);
-					this.ui.requestRender();
-				}
-				break;
-			}
-
-			case "tool_execution_end": {
-				const component = this.pendingTools.get(event.toolCallId);
-				if (component) {
-					component.updateResult({ ...event.result, isError: event.isError });
-					this.pendingTools.delete(event.toolCallId);
-					this.ui.requestRender();
-				}
-				break;
-			}
-
-			case "agent_end":
-				if (this.loadingAnimation) {
-					this.loadingAnimation.stop();
-					this.loadingAnimation = undefined;
-					this.statusContainer.clear();
-				}
-				if (this.streamingComponent) {
-					this.chatContainer.removeChild(this.streamingComponent);
-					this.streamingComponent = undefined;
-					this.streamingMessage = undefined;
-				}
-				this.pendingTools.clear();
-
-				await this.checkShutdownRequested();
-
-				this.ui.requestRender();
-				break;
-
-			case "auto_compaction_start": {
-				// Keep editor active; submissions are queued during compaction.
-				// Set up escape to abort auto-compaction
-				this.autoCompactionEscapeHandler = this.defaultEditor.onEscape;
-				this.defaultEditor.onEscape = () => {
-					this.session.abortCompaction();
-				};
-				// Show compacting indicator with reason
-				this.statusContainer.clear();
-				const reasonText = event.reason === "overflow" ? "Context overflow detected, " : "";
-				this.autoCompactionLoader = new Loader(
-					this.ui,
-					(spinner) => theme.fg("accent", spinner),
-					(text) => theme.fg("muted", text),
-					`${reasonText}Auto-compacting... (${appKey(this.keybindings, "interrupt")} to cancel)`,
-				);
-				this.statusContainer.addChild(this.autoCompactionLoader);
-				this.ui.requestRender();
-				break;
-			}
-
-			case "auto_compaction_end": {
-				// Restore escape handler
-				if (this.autoCompactionEscapeHandler) {
-					this.defaultEditor.onEscape = this.autoCompactionEscapeHandler;
-					this.autoCompactionEscapeHandler = undefined;
-				}
-				// Stop loader
-				if (this.autoCompactionLoader) {
-					this.autoCompactionLoader.stop();
-					this.autoCompactionLoader = undefined;
-					this.statusContainer.clear();
-				}
-				// Handle result
-				if (event.aborted) {
-					this.showStatus("Auto-compaction cancelled");
-				} else if (event.result) {
-					// Rebuild chat to show compacted state
-					this.chatContainer.clear();
-					this.rebuildChatFromMessages();
-					// Add compaction component at bottom so user sees it without scrolling
-					this.addMessageToChat({
-						role: "compactionSummary",
-						tokensBefore: event.result.tokensBefore,
-						summary: event.result.summary,
-						timestamp: Date.now(),
-					});
-					this.footer.invalidate();
-				} else if (event.errorMessage) {
-					// Compaction failed (e.g., quota exceeded, API error)
-					this.chatContainer.addChild(new Spacer(1));
-					this.chatContainer.addChild(new Text(theme.fg("error", event.errorMessage), 1, 0));
-				}
-				void this.flushCompactionQueue({ willRetry: event.willRetry });
-				this.ui.requestRender();
-				break;
-			}
-
-			case "auto_retry_start": {
-				// Set up escape to abort retry
-				this.retryEscapeHandler = this.defaultEditor.onEscape;
-				this.defaultEditor.onEscape = () => {
-					this.session.abortRetry();
-				};
-				// Show retry indicator
-				this.statusContainer.clear();
-				const delaySeconds = Math.round(event.delayMs / 1000);
-				this.retryLoader = new Loader(
-					this.ui,
-					(spinner) => theme.fg("warning", spinner),
-					(text) => theme.fg("muted", text),
-					`Retrying (${event.attempt}/${event.maxAttempts}) in ${delaySeconds}s... (${appKey(this.keybindings, "interrupt")} to cancel)`,
-				);
-				this.statusContainer.addChild(this.retryLoader);
-				this.ui.requestRender();
-				break;
-			}
-
-			case "auto_retry_end": {
-				// Restore escape handler
-				if (this.retryEscapeHandler) {
-					this.defaultEditor.onEscape = this.retryEscapeHandler;
-					this.retryEscapeHandler = undefined;
-				}
-				// Stop loader
-				if (this.retryLoader) {
-					this.retryLoader.stop();
-					this.retryLoader = undefined;
-					this.statusContainer.clear();
-				}
-				// Show error only on final failure (success shows normal response)
-				if (!event.success) {
-					this.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
-				}
-				this.ui.requestRender();
-				break;
-			}
-
-			case "fallback_provider_switch": {
-				this.showStatus(`Switched from ${event.from} → ${event.to} (${event.reason})`);
-				this.ui.requestRender();
-				break;
-			}
-
-			case "fallback_provider_restored": {
-				this.showStatus(`Restored to ${event.provider}`);
-				this.ui.requestRender();
-				break;
-			}
-
-			case "fallback_chain_exhausted": {
-				this.showError(event.reason);
-				this.ui.requestRender();
-				break;
-			}
-		}
+		await handleAgentEvent(this as any, event);
 	}
 
 	/** Extract text content from a user message */
@@ -2701,6 +2277,12 @@ export class InteractiveMode {
 	private isShuttingDown = false;
 
 	private async shutdown(): Promise<void> {
+		const shutdownBehavior = this.options.shutdownBehavior ?? "exit_process";
+		if (shutdownBehavior === "ignore") {
+			this.showStatus("Quit is unavailable in the browser-attached terminal");
+			return;
+		}
+
 		if (this.isShuttingDown) return;
 		this.isShuttingDown = true;
 
@@ -2724,6 +2306,9 @@ export class InteractiveMode {
 		await this.ui.terminal.drainInput(1000);
 
 		this.stop();
+		if (shutdownBehavior === "stop_ui") {
+			return;
+		}
 		process.exit(0);
 	}
 
@@ -2736,6 +2321,11 @@ export class InteractiveMode {
 	}
 
 	private handleCtrlZ(): void {
+		// On Windows, SIGTSTP doesn't exist - Ctrl+Z is not supported
+		if (process.platform === "win32") {
+			return;
+		}
+
 		// Ignore SIGINT while suspended so Ctrl+C in the terminal does not
 		// kill the backgrounded process. The handler is removed on resume.
 		const ignoreSigint = () => {};
@@ -3299,73 +2889,20 @@ export class InteractiveMode {
 	}
 
 	private async handleModelCommand(searchTerm?: string): Promise<void> {
-		if (!searchTerm) {
-			this.showModelSelector();
-			return;
-		}
-
-		const model = await this.findExactModelMatch(searchTerm);
-		if (model) {
-			try {
-				await this.session.setModel(model);
-				this.footer.invalidate();
-				this.updateEditorBorderColor();
-				this.showStatus(`Model: ${model.id}`);
-				this.checkDaxnutsEasterEgg(model);
-			} catch (error) {
-				this.showError(error instanceof Error ? error.message : String(error));
-			}
-			return;
-		}
-
-		this.showModelSelector(searchTerm);
+		await handleModelCommandController(this, searchTerm);
 	}
 
 	private async findExactModelMatch(searchTerm: string): Promise<Model<any> | undefined> {
-		const term = searchTerm.trim();
-		if (!term) return undefined;
-
-		let targetProvider: string | undefined;
-		let targetModelId = "";
-
-		if (term.includes("/")) {
-			const parts = term.split("/", 2);
-			targetProvider = parts[0]?.trim().toLowerCase();
-			targetModelId = parts[1]?.trim().toLowerCase() ?? "";
-		} else {
-			targetModelId = term.toLowerCase();
-		}
-
-		if (!targetModelId) return undefined;
-
-		const models = await this.getModelCandidates();
-		const exactMatches = models.filter((item) => {
-			const idMatch = item.id.toLowerCase() === targetModelId;
-			const providerMatch = !targetProvider || item.provider.toLowerCase() === targetProvider;
-			return idMatch && providerMatch;
-		});
-
-		return exactMatches.length === 1 ? exactMatches[0] : undefined;
+		return findExactModelMatchController(this, searchTerm);
 	}
 
 	private async getModelCandidates(): Promise<Model<any>[]> {
-		if (this.session.scopedModels.length > 0) {
-			return this.session.scopedModels.map((scoped) => scoped.model);
-		}
-
-		this.session.modelRegistry.refresh();
-		try {
-			return await this.session.modelRegistry.getAvailable();
-		} catch {
-			return [];
-		}
+		return getModelCandidatesController(this);
 	}
 
 	/** Update the footer's available provider count from current model candidates */
 	private async updateAvailableProviderCount(): Promise<void> {
-		const models = await this.getModelCandidates();
-		const uniqueProviders = new Set(models.map((m) => m.provider));
-		this.footerDataProvider.setAvailableProviderCount(uniqueProviders.size);
+		await updateAvailableProviderCountController(this);
 	}
 
 	private showModelSelector(initialSearchInput?: string): void {
@@ -4251,6 +3788,11 @@ export class InteractiveMode {
 		}
 		void this.flushCompactionQueue({ willRetry: false });
 		return result;
+	}
+
+	requestRender(force = false): void {
+		if (!this.isInitialized) return;
+		this.ui.requestRender(force);
 	}
 
 	stop(): void {

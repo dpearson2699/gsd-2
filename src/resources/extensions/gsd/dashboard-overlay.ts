@@ -38,6 +38,7 @@ function unitLabel(type: string): string {
     case "triage-captures": return "Triage";
     case "quick-task": return "Quick Task";
     case "replan-slice": return "Replan";
+    case "custom-step": return "Workflow Step";
     default: return type;
   }
 }
@@ -305,7 +306,11 @@ export class GSDDashboardOverlay {
       : "";
     let elapsedParts = "";
     if (this.dashData.active || this.dashData.paused) {
-      elapsedParts = th.fg("dim", formatDuration(this.dashData.elapsed));
+      // Guard: skip display when elapsed is zero or unreasonably large (>30 days)
+      const elapsed = this.dashData.elapsed;
+      elapsedParts = elapsed > 0 && elapsed < 30 * 24 * 3600_000
+        ? th.fg("dim", formatDuration(elapsed))
+        : "";
       const eta = estimateTimeRemaining();
       if (eta) elapsedParts += th.fg("dim", `  ·  ${eta}`);
     } else if (isRemote) {
@@ -320,6 +325,16 @@ export class GSDDashboardOverlay {
         : progressScore.level === "yellow" ? th.fg("warning", "●")
           : th.fg("error", "●");
       lines.push(row(`${progressIcon} ${th.fg("text", progressScore.summary)}`));
+
+      // Show signal details when degraded — real-time visibility into what doctor found
+      if (progressScore.level !== "green" && progressScore.signals.length > 0) {
+        for (const signal of progressScore.signals) {
+          const prefix = signal.kind === "positive" ? th.fg("success", "  ✓")
+            : signal.kind === "negative" ? th.fg("error", "  ✗")
+              : th.fg("dim", "  ·");
+          lines.push(row(`${prefix} ${th.fg("dim", signal.label)}`));
+        }
+      }
     }
     lines.push(blank());
 

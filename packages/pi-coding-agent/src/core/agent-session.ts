@@ -25,6 +25,7 @@ import type {
 } from "@gsd/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, TextContent } from "@gsd/pi-ai";
 import { modelsAreEqual, resetApiProviders, supportsXhigh } from "@gsd/pi-ai";
+import { Type } from "@sinclair/typebox";
 import { getDocsPath } from "../config.js";
 import { getErrorMessage } from "../utils/error.js";
 import { theme } from "../modes/interactive/theme/theme.js";
@@ -107,8 +108,22 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 }
 
 /** Session-specific events that extend the core AgentEvent */
+export type SessionStateChangeReason =
+	| "set_model"
+	| "set_thinking_level"
+	| "set_steering_mode"
+	| "set_follow_up_mode"
+	| "set_auto_compaction"
+	| "set_auto_retry"
+	| "abort_retry"
+	| "new_session"
+	| "switch_session"
+	| "set_session_name"
+	| "fork";
+
 export type AgentSessionEvent =
 	| AgentEvent
+	| { type: "session_state_changed"; reason: SessionStateChangeReason }
 	| { type: "auto_compaction_start"; reason: "threshold" | "overflow" }
 	| {
 			type: "auto_compaction_end";
@@ -353,6 +368,10 @@ export class AgentSession {
 		for (const l of this._eventListeners) {
 			l(event);
 		}
+	}
+
+	private _emitSessionStateChanged(reason: SessionStateChangeReason): void {
+		this._emit({ type: "session_state_changed", reason });
 	}
 
 	// Track last assistant message for auto-compaction check
@@ -732,9 +751,10 @@ export class AgentSession {
 	 * Changes take effect on the next agent turn.
 	 */
 	setActiveToolsByName(toolNames: string[]): void {
+		const requestedToolNames = [...new Set([...toolNames, ...this._getBuiltinToolNames()])];
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
-		for (const name of toolNames) {
+		for (const name of requestedToolNames) {
 			const tool = this._toolRegistry.get(name);
 			if (tool) {
 				tools.push(tool);
@@ -742,6 +762,7 @@ export class AgentSession {
 			}
 		}
 		this.agent.setTools(tools);
+
 
 		// Rebuild base system prompt with new tool set
 		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
@@ -856,6 +877,48 @@ export class AgentSession {
 			}
 		}
 		return Array.from(unique);
+	}
+
+	private _findSkillByName(skillName: string) {
+		return this.resourceLoader.getSkills().skills.find((skill) => skill.name === skillName);
+	}
+
+	private _formatMissingSkillMessage(skillName: string): string {
+		const availableSkills = this.resourceLoader.getSkills().skills.map((skill) => skill.name).join(", ") || "(none)";
+		return `Skill "${skillName}" not found. Available skills: ${availableSkills}`;
+	}
+
+	private _emitSkillExpansionError(skillFilePath: string, err: unknown): void {
+		this._extensionRunner?.emitError({
+			extensionPath: skillFilePath,
+			event: "skill_expansion",
+			error: getErrorMessage(err),
+		});
+	}
+
+	private _renderSkillInvocation(skill: { name: string; filePath: string; baseDir: string }, args?: string): string {
+		const content = readFileSync(skill.filePath, "utf-8");
+		const body = stripFrontmatter(content).trim();
+		const skillBlock = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
+		return args && args.trim() ? `${skillBlock}\n\n${args.trim()}` : skillBlock;
+	}
+
+	private _expandSkillByName(skillName: string, args?: string): string {
+		const skill = this._findSkillByName(skillName);
+		if (!skill) {
+			throw new Error(this._formatMissingSkillMessage(skillName));
+		}
+
+		try {
+			return this._renderSkillInvocation(skill, args);
+		} catch (err) {
+			this._emitSkillExpansionError(skill.filePath, err);
+			throw err;
+		}
+	}
+
+	private _formatSkillInvocation(skillName: string, args?: string): string {
+		return this._expandSkillByName(skillName, args);
 	}
 
 	private _rebuildSystemPrompt(toolNames: string[]): string {
@@ -1103,23 +1166,76 @@ export class AgentSession {
 		const skillName = spaceIndex === -1 ? text.slice(7) : text.slice(7, spaceIndex);
 		const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1).trim();
 
-		const skill = this.resourceLoader.getSkills().skills.find((s) => s.name === skillName);
-		if (!skill) return text; // Unknown skill, pass through
+		if (!this._findSkillByName(skillName)) return text;
 
 		try {
-			const content = readFileSync(skill.filePath, "utf-8");
-			const body = stripFrontmatter(content).trim();
-			const skillBlock = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${skill.baseDir}.\n\n${body}\n</skill>`;
-			return args ? `${skillBlock}\n\n${args}` : skillBlock;
-		} catch (err) {
-			// Emit error like extension commands do
-			this._extensionRunner?.emitError({
-				extensionPath: skill.filePath,
-				event: "skill_expansion",
-				error: getErrorMessage(err),
-			});
-			return text; // Return original on error
+			return this._formatSkillInvocation(skillName, args);
+		} catch {
+			return text;
 		}
+	}
+
+	private _createBuiltInSkillTool(): AgentTool {
+		const skillSchema = Type.Object({
+			skill: Type.String({ description: "The skill name. E.g., 'commit', 'review-pr', or 'pdf'" }),
+			args: Type.Optional(Type.String({ description: "Optional arguments for the skill" })),
+		});
+
+		return {
+			name: "Skill",
+			label: "Skill",
+			description:
+				"Execute a skill within the main conversation. Use this tool when users ask for a slash command or reference a skill by name. Returns the expanded skill block and appends args after it.",
+			parameters: skillSchema,
+			execute: async (_toolCallId, params: unknown) => {
+				const input = params as { skill: string; args?: string };
+				try {
+					return {
+						content: [
+							{
+								type: "text",
+								text: this._expandSkillByName(input.skill, input.args),
+							},
+						],
+						details: undefined,
+					};
+				} catch (err) {
+					return {
+						content: [{ type: "text", text: getErrorMessage(err) }],
+						details: undefined,
+					};
+				}
+			},
+		};
+	}
+
+	private _getBuiltinToolNames(): string[] {
+		return this._getBuiltinTools().map((tool) => tool.name);
+	}
+
+	private _getBuiltinTools(): AgentTool[] {
+		return [this._createBuiltInSkillTool()];
+	}
+
+	private _getRegisteredToolDefinitions(): ToolDefinition[] {
+		const registeredTools = this._extensionRunner?.getAllRegisteredTools() ?? [];
+		return registeredTools.map((tool) => tool.definition);
+	}
+
+	private _getBuiltinToolDefinitions(): ToolDefinition[] {
+		return this._getBuiltinTools().map((tool) => ({
+			name: tool.name,
+			label: tool.label,
+			description: tool.description,
+			parameters: tool.parameters,
+			execute: async () => ({ content: [], details: undefined }),
+		}));
+	}
+
+	getRenderableToolDefinition(toolName: string): ToolDefinition | undefined {
+		return [...this._getBuiltinToolDefinitions(), ...this._getRegisteredToolDefinitions()].find(
+			(tool) => tool.name === toolName,
+		);
 	}
 
 	/**
@@ -1445,6 +1561,7 @@ export class AgentSession {
 		}
 
 		// Emit session event to custom tools
+		this._emitSessionStateChanged("new_session");
 		return true;
 	}
 
@@ -1485,6 +1602,7 @@ export class AgentSession {
 		}
 		this.setThinkingLevel(thinkingLevel);
 		await this._emitModelSelect(model, previousModel, source);
+		this._emitSessionStateChanged("set_model");
 	}
 
 	/**
@@ -1603,6 +1721,7 @@ export class AgentSession {
 			if (this.supportsThinking() || effectiveLevel !== "off") {
 				this.settingsManager.setDefaultThinkingLevel(effectiveLevel);
 			}
+			this._emitSessionStateChanged("set_thinking_level");
 		}
 	}
 
@@ -1684,6 +1803,7 @@ export class AgentSession {
 	setSteeringMode(mode: "all" | "one-at-a-time"): void {
 		this.agent.setSteeringMode(mode);
 		this.settingsManager.setSteeringMode(mode);
+		this._emitSessionStateChanged("set_steering_mode");
 	}
 
 	/**
@@ -1693,6 +1813,7 @@ export class AgentSession {
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void {
 		this.agent.setFollowUpMode(mode);
 		this.settingsManager.setFollowUpMode(mode);
+		this._emitSessionStateChanged("set_follow_up_mode");
 	}
 
 	// =========================================================================
@@ -1721,6 +1842,7 @@ export class AgentSession {
 	/** Toggle auto-compaction setting */
 	setAutoCompactionEnabled(enabled: boolean): void {
 		this._compactionOrchestrator.setAutoCompactionEnabled(enabled);
+		this._emitSessionStateChanged("set_auto_compaction");
 	}
 
 	/** Whether auto-compaction is enabled */
@@ -1967,8 +2089,12 @@ export class AgentSession {
 		const wrappedExtensionTools = this._extensionRunner
 			? wrapRegisteredTools(allCustomTools, this._extensionRunner)
 			: [];
+		const builtinTools = this._getBuiltinTools();
 
 		const toolRegistry = new Map(this._baseToolRegistry);
+		for (const tool of builtinTools) {
+			toolRegistry.set(tool.name, tool);
+		}
 		for (const tool of wrappedExtensionTools as AgentTool[]) {
 			toolRegistry.set(tool.name, tool);
 		}
@@ -2086,7 +2212,11 @@ export class AgentSession {
 
 	/** Cancel in-progress retry */
 	abortRetry(): void {
+		const hadRetry = this._retryHandler.isRetrying;
 		this._retryHandler.abortRetry();
+		if (hadRetry) {
+			this._emitSessionStateChanged("abort_retry");
+		}
 	}
 
 	/** Whether auto-retry is currently in progress */
@@ -2102,6 +2232,7 @@ export class AgentSession {
 	/** Toggle auto-retry setting */
 	setAutoRetryEnabled(enabled: boolean): void {
 		this._retryHandler.setAutoRetryEnabled(enabled);
+		this._emitSessionStateChanged("set_auto_retry");
 	}
 
 	// =========================================================================
@@ -2291,6 +2422,7 @@ export class AgentSession {
 		}
 
 		this._reconnectToAgent();
+		this._emitSessionStateChanged("switch_session");
 		return true;
 	}
 
@@ -2299,6 +2431,7 @@ export class AgentSession {
 	 */
 	setSessionName(name: string): void {
 		this.sessionManager.appendSessionInfo(name);
+		this._emitSessionStateChanged("set_session_name");
 	}
 
 	/**
@@ -2362,6 +2495,7 @@ export class AgentSession {
 			this.agent.replaceMessages(sessionContext.messages);
 		}
 
+		this._emitSessionStateChanged("fork");
 		return { selectedText, cancelled: false };
 	}
 
@@ -2694,14 +2828,11 @@ export class AgentSession {
 	async exportToHtml(outputPath?: string): Promise<string> {
 		const themeName = this.settingsManager.getTheme();
 
-		// Create tool renderer if we have an extension runner (for custom tool HTML rendering)
-		let toolRenderer: ToolHtmlRenderer | undefined;
-		if (this._extensionRunner) {
-			toolRenderer = createToolHtmlRenderer({
-				getToolDefinition: (name) => this._extensionRunner!.getToolDefinition(name),
-				theme,
-			});
-		}
+		// Create tool renderer for extension and built-in tool HTML rendering
+		const toolRenderer = createToolHtmlRenderer({
+			getToolDefinition: (name) => this.getRenderableToolDefinition(name),
+			theme,
+		});
 
 		return await exportSessionToHtml(this.sessionManager, this.state, {
 			outputPath,

@@ -13,7 +13,7 @@ import {
   resolveMilestoneFile, resolveSliceFile, resolveSlicePath,
   resolveTasksDir, resolveTaskFiles, resolveTaskFile,
   relMilestoneFile, relSliceFile, relSlicePath, relMilestonePath,
-  resolveGsdRootFile, relGsdRootFile,
+  resolveGsdRootFile, relGsdRootFile, resolveRuntimeFile,
 } from "./paths.js";
 import { resolveSkillDiscoveryMode, resolveInlineLevel, loadEffectiveGSDPreferences, resolveAllSkillReferences } from "./preferences.js";
 import type { GSDState, InlineLevel } from "./types.js";
@@ -424,7 +424,7 @@ export function buildSkillActivationBlock(params: {
     params.taskPlanContent ?? undefined,
   );
 
-  const visibleSkills = getLoadedSkills().filter(skill => !skill.disableModelInvocation);
+  const visibleSkills = (typeof getLoadedSkills === 'function' ? getLoadedSkills() : []).filter(skill => !skill.disableModelInvocation);
   const installedNames = new Set(visibleSkills.map(skill => normalizeSkillReference(skill.name)));
   const avoided = new Set(resolvePreferenceSkillNames(prefs?.avoid_skills ?? [], params.base));
   const matched = new Set<string>();
@@ -759,13 +759,41 @@ export async function checkNeedsRunUat(
     if (hasResult) return null;
   }
 
-  // Classify UAT type; unknown type → treat as human-experience (human review)
-  const uatType = extractUatType(uatContent) ?? "human-experience";
+  // Classify UAT type; default to artifact-driven (LLM-executed UATs are always artifact-driven)
+  const uatType = extractUatType(uatContent) ?? "artifact-driven";
 
   return { sliceId: sid, uatType };
 }
 
 // ─── Prompt Builders ──────────────────────────────────────────────────────
+
+/**
+ * Build a prompt for the discuss-milestone unit type.
+ * Loads the guided-discuss-milestone template and inlines the CONTEXT-DRAFT
+ * as a seed when present. The discussion agent interviews the user, writes
+ * a full CONTEXT.md, and the phase transitions to pre-planning automatically.
+ */
+export async function buildDiscussMilestonePrompt(mid: string, midTitle: string, base: string): Promise<string> {
+  const discussTemplates = inlineTemplate("context", "Context");
+
+  const basePrompt = loadPrompt("guided-discuss-milestone", {
+    milestoneId: mid,
+    milestoneTitle: midTitle,
+    inlinedTemplates: discussTemplates,
+    structuredQuestionsAvailable: "true",
+    commitInstruction: "Do not commit planning artifacts — .gsd/ is managed externally.",
+  });
+
+  // If a CONTEXT-DRAFT.md exists, append it as seed material
+  const draftPath = resolveMilestoneFile(base, mid, "CONTEXT-DRAFT");
+  const draftContent = draftPath ? await loadFile(draftPath) : null;
+
+  if (draftContent) {
+    return `${basePrompt}\n\n## Prior Discussion (Draft Seed)\n\nThe following draft was captured from a prior multi-milestone discussion. Use it as seed material — the user has already provided this context. Start with a brief reflection on what the draft covers, then probe for any gaps or open questions before writing the full CONTEXT.md.\n\n${draftContent}`;
+  }
+
+  return basePrompt;
+}
 
 export async function buildResearchMilestonePrompt(mid: string, midTitle: string, base: string): Promise<string> {
   const contextPath = resolveMilestoneFile(base, mid, "CONTEXT");
@@ -1082,8 +1110,16 @@ export async function buildExecuteTaskPrompt(
     finalCarryForward = truncateAtSectionBoundary(carryForwardSection, carryForwardBudget).content;
   }
 
+  // Inline RUNTIME.md if present
+  const runtimePath = resolveRuntimeFile(base);
+  const runtimeContent = existsSync(runtimePath) ? await loadFile(runtimePath) : null;
+  const runtimeContext = runtimeContent
+    ? `### Runtime Context\nSource: \`.gsd/RUNTIME.md\`\n\n${runtimeContent.trim()}`
+    : "";
+
   return loadPrompt("execute-task", {
     overridesSection,
+    runtimeContext,
     workingDirectory: base,
     milestoneId: mid, sliceId: sid, sliceTitle: sTitle, taskId: tid, taskTitle: tTitle,
     planPath: join(base, relSliceFile(base, mid, sid, "PLAN")),
@@ -1395,7 +1431,7 @@ export async function buildRunUatPrompt(
   const inlinedContext = capPreamble(`## Inlined Context (preloaded — do not re-read these files)\n\n${inlined.join("\n\n---\n\n")}`);
 
   const uatResultPath = join(base, relSliceFile(base, mid, sliceId, "UAT-RESULT"));
-  const uatType = extractUatType(uatContent) ?? "human-experience";
+  const uatType = extractUatType(uatContent) ?? "artifact-driven";
 
   return loadPrompt("run-uat", {
     workingDirectory: base,

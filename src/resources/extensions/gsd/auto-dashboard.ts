@@ -19,10 +19,24 @@ import { parseRoadmap, parsePlan } from "./files.js";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { truncateToWidth, visibleWidth } from "@gsd/pi-tui";
-import { makeUI, GLYPH, INDENT } from "../shared/mod.js";
+import { makeUI } from "../shared/tui.js";
+import { GLYPH, INDENT } from "../shared/mod.js";
 import { computeProgressScore } from "./progress-score.js";
 import { getActiveWorktreeName } from "./worktree-command.js";
 import { loadEffectiveGSDPreferences, getGlobalGSDPreferencesPath } from "./preferences.js";
+import { resolveServiceTierIcon, getEffectiveServiceTier } from "./service-tier.js";
+
+// ─── UAT Slice Extraction ─────────────────────────────────────────────────────
+
+/**
+ * Extract the target slice ID from a run-uat unit ID (e.g. "M001/S01" → "S01").
+ * Returns null if the format doesn't match.
+ */
+export function extractUatSliceId(unitId: string): string | null {
+  const parts = unitId.split("/");
+  if (parts.length >= 2 && parts[1]!.startsWith("S")) return parts[1]!;
+  return null;
+}
 
 // ─── Dashboard Data ───────────────────────────────────────────────────────────
 
@@ -54,6 +68,7 @@ export interface AutoDashboardData {
 export function unitVerb(unitType: string): string {
   if (unitType.startsWith("hook/")) return `hook: ${unitType.slice(5)}`;
   switch (unitType) {
+    case "discuss-milestone": return "discussing";
     case "research-milestone":
     case "research-slice": return "researching";
     case "plan-milestone":
@@ -64,6 +79,7 @@ export function unitVerb(unitType: string): string {
     case "rewrite-docs": return "rewriting";
     case "reassess-roadmap": return "reassessing";
     case "run-uat": return "running UAT";
+    case "custom-step": return "executing workflow step";
     default: return unitType;
   }
 }
@@ -71,6 +87,7 @@ export function unitVerb(unitType: string): string {
 export function unitPhaseLabel(unitType: string): string {
   if (unitType.startsWith("hook/")) return "HOOK";
   switch (unitType) {
+    case "discuss-milestone": return "DISCUSS";
     case "research-milestone": return "RESEARCH";
     case "research-slice": return "RESEARCH";
     case "plan-milestone": return "PLAN";
@@ -81,6 +98,7 @@ export function unitPhaseLabel(unitType: string): string {
     case "rewrite-docs": return "REWRITE";
     case "reassess-roadmap": return "REASSESS";
     case "run-uat": return "UAT";
+    case "custom-step": return "WORKFLOW";
     default: return unitType.toUpperCase();
   }
 }
@@ -95,6 +113,7 @@ function peekNext(unitType: string, state: GSDState): string {
   const sid = state.activeSlice?.id ?? "";
   if (unitType.startsWith("hook/")) return `continue ${sid}`;
   switch (unitType) {
+    case "discuss-milestone": return "research or plan milestone";
     case "research-milestone": return "plan milestone roadmap";
     case "plan-milestone": return "plan or execute first slice";
     case "research-slice": return `plan ${sid}`;
@@ -142,8 +161,9 @@ export function describeNextUnit(state: GSDState): { label: string; description:
 
 /** Format elapsed time since auto-mode started */
 export function formatAutoElapsed(autoStartTime: number): string {
-  if (!autoStartTime) return "";
+  if (!autoStartTime || autoStartTime <= 0 || !Number.isFinite(autoStartTime)) return "";
   const ms = Date.now() - autoStartTime;
+  if (ms < 0 || ms > 30 * 24 * 3600_000) return ""; // negative or >30 days = invalid
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
@@ -289,7 +309,7 @@ function refreshLastCommit(basePath: string): void {
     const sep = raw.indexOf("|");
     if (sep > 0) {
       cachedLastCommit = {
-        timeAgo: raw.slice(0, sep).replace(/ ago$/, "").replace(/ /g, ""),
+        timeAgo: raw.slice(0, sep).replace(/ ago$/, ""),
         message: raw.slice(sep + 1),
       };
     }
@@ -390,6 +410,8 @@ export interface WidgetStateAccessors {
   getCmdCtx(): ExtensionCommandContext | null;
   getBasePath(): string;
   isVerbose(): boolean;
+  /** True while newSession() is in-flight — render must not access session state. */
+  isSessionSwitching(): boolean;
 }
 
 export function updateProgressWidget(
@@ -405,9 +427,16 @@ export function updateProgressWidget(
   const verb = unitVerb(unitType);
   const phaseLabel = unitPhaseLabel(unitType);
   const mid = state.activeMilestone;
-  const slice = state.activeSlice;
-  const task = state.activeTask;
   const isHook = unitType.startsWith("hook/");
+
+  // When run-uat is executing for a just-completed slice (e.g. S01),
+  // deriveState() has already advanced activeSlice to the next one (S02).
+  // Override the displayed slice to match the UAT target from the unit ID.
+  const uatTargetSliceId = unitType === "run-uat" ? extractUatSliceId(unitId) : null;
+  const slice = uatTargetSliceId
+    ? { id: uatTargetSliceId, title: state.activeSlice?.title ?? "" }
+    : state.activeSlice;
+  const task = state.activeTask;
 
   // Cache git branch at widget creation time (not per render)
   let cachedBranch: string | null = null;
@@ -434,6 +463,9 @@ export function updateProgressWidget(
   // Pre-fetch last commit for display
   refreshLastCommit(accessors.getBasePath());
 
+  // Cache the effective service tier at widget creation time (reads preferences)
+  const effectiveServiceTier = getEffectiveServiceTier();
+
   ctx.ui.setWidget("gsd-progress", (tui, theme) => {
     let pulseBright = true;
     let cachedLines: string[] | undefined;
@@ -459,6 +491,14 @@ export function updateProgressWidget(
     return {
       render(width: number): string[] {
         if (cachedLines && cachedWidth === width) return cachedLines;
+
+        // While newSession() is in-flight, session state is mid-mutation.
+        // Accessing cmdCtx.sessionManager or cmdCtx.getContextUsage() can
+        // block the render loop and freeze the TUI. Return the last cached
+        // frame (or an empty frame on first render) until the switch settles.
+        if (accessors.isSessionSwitching()) {
+          return cachedLines ?? [];
+        }
 
         const ui = makeUI(theme, width);
         const lines: string[] = [];
@@ -495,6 +535,20 @@ export function updateProgressWidget(
           : "";
         lines.push(rightAlign(headerLeft, headerRight, width));
 
+        // Show health signal details when degraded (yellow/red)
+        if (score.level !== "green" && score.signals.length > 0 && widgetMode !== "min") {
+          // Show up to 3 most relevant signals in compact form
+          const topSignals = score.signals
+            .filter(s => s.kind === "negative")
+            .slice(0, 3);
+          if (topSignals.length > 0) {
+            const signalStr = topSignals
+              .map(s => theme.fg("dim", s.label))
+              .join(theme.fg("dim", " · "));
+            lines.push(`${pad}  ${signalStr}`);
+          }
+        }
+
         // ── Gather stats (needed by multiple modes) ─────────────────────
         const cmdCtx = accessors.getCmdCtx();
         let totalInput = 0;
@@ -524,9 +578,10 @@ export function updateProgressWidget(
         // Model display — shown in context section, not stats
         const modelId = cmdCtx?.model?.id ?? "";
         const modelProvider = cmdCtx?.model?.provider ?? "";
-        const modelDisplay = modelProvider && modelId
+        const tierIcon = resolveServiceTierIcon(effectiveServiceTier, modelId);
+        const modelDisplay = (modelProvider && modelId
           ? `${modelProvider}/${modelId}`
-          : modelId;
+          : modelId) + (tierIcon ? ` ${tierIcon}` : "");
 
         // ── Mode: off — return empty ──────────────────────────────────
         if (widgetMode === "off") {

@@ -6,6 +6,173 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.41.0] - 2026-03-21
+
+### Added
+- **doctor**: worktree lifecycle checks, cleanup consolidation, enhanced /worktree list (#1814)
+- **web**: browser-based web interface (#1717)
+- **ci**: skip build/test for docs-only PRs and add prompt injection scan (#1699)
+- **docs**: add Custom Models guide and update related documentation (#1670)
+- surface doctor issue details in progress score widget and health views (#1667)
+- **cleanup**: add ~/.gsd/projects/ orphan detection and pruning (#1686)
+
+### Fixed
+- skip web build on Windows — Next.js webpack hits EPERM on system dirs
+- include web build in main build command
+- fall through to prose slice parser when checkbox parser yields empty under ## Slices (#1744)
+- **auto**: verify merge anchored before worktree teardown (#1829)
+- **auto**: reject execute-task with zero tool calls as hallucinated (#1838)
+- also convert --import resolver path to file URL for Windows
+- use pathToFileURL for Windows-safe ESM import in verification-gate test
+- **gsd**: read depends_on from CONTEXT-DRAFT.md when CONTEXT.md is absent (#1743)
+- **roadmap**: detect ✓ completion marker in prose slice headers (#1816)
+- **auto**: reverse-sync root-level .gsd files on worktree teardown (#1831)
+- **tui**: prevent freeze when using @ file finder (#1832)
+- prevent silent data loss when milestone merge fails due to dirty working tree (#1752)
+- **verification**: avoid DEP0190 by passing command to shell explicitly (#1827)
+- **state**: treat zero-slice roadmap as pre-planning instead of blocked (#1826)
+- **hooks**: process depth verification in queue mode (#1823)
+- **auto**: register SIGHUP/SIGINT handlers to clean lock files on crash (#1821)
+- auto-dispatch discussion instead of hard-stopping on needs-discussion phase (#1820)
+- **doctor**: fix roadmap checkbox and UAT stub immediately instead of deferring (#1819)
+- **auto**: resolve pending unitPromise in stopAuto to prevent hang (#1818)
+- **git**: handle unborn branch in nativeBranchExists to prevent dispatch deadlock (#1815)
+- **doctor**: prevent cleanup from deleting user work files (#1825)
+- use realpathSync.native on Windows to resolve 8.3 short paths
+- detect and skip ghost milestone directories in deriveState() (#1817)
+- create milestone directory when triage defers to a not-yet-existing milestone (#1813)
+- add @gsd/pi-tui to test module resolver in dist-redirect (#1811)
+- surface unmapped active requirements when all milestones complete (#1805)
+- normalize paths in tests to handle Windows 8.3 short-path forms (#1804)
+- share milestone ID reservation between preview and tool (#1569) (#1802)
+- **tui,gsd**: tool-call loop guard + TUI stack overflow prevention (#1801)
+- validate paused-session milestone before restoring it (#1664) (#1800)
+- detect REPLAN-TRIGGER.md in deriveState for triage-initiated replans (#1798)
+- dispatch uat targets last completed slice instead of activeSlice (#1693) (#1796)
+- read depends_on from CONTEXT-DRAFT.md when CONTEXT.md absent (#1795)
+- **worktree**: sync root-level files and all milestone dirs on worktree teardown (#1794)
+- dashboard highlights UAT target slice instead of advanced activeSlice (#1793)
+- dispatch guard skips completed milestones with SUMMARY file (#1791)
+- ensureDbOpen creates DB + migrates Markdown in interactive sessions (#1790)
+- add require condition to pi-tui exports for CJS resolution
+- update integration test to match dependency-aware dispatch guard wording
+- use createRequire instead of bare require for lazy pi-tui import
+- update doctor-git test to match PR #1633 behavior change
+- increase resolveProjectRootFromGitFile walk-up limit from 10 to 30
+- include ensure-workspace-builds.cjs in npm package files
+- resolve extension typecheck errors in test files
+- resolve CI build errors from Wave 4+5 merges
+- return retry from postUnitPreVerification when artifact verification fails (#1571) (#1782)
+- hook model field uses model-router resolution instead of Claude-only registry (#1720) (#1781)
+- stop auto-mode immediately on infrastructure errors (ENOSPC, ENOMEM, etc.) (#1780)
+- add missing milestones/ segment in resolveHookArtifactPath (#1779)
+- break needs-discussion infinite loop when survivor branch exists (#1726) (#1778)
+- tear down browser sessions at unit boundaries and in stopAuto (#1733) (#1777)
+- rebuild STATE.md and reset completed-units on milestone transition (#1576) (#1775)
+- resolve pending unit promise on all exit paths to prevent orphaned auto-loop (#1774)
+- closeout unit on pause and heal runtime records on resume (#1625) (#1773)
+- call selfHealRuntimeRecords before autoLoop to clear orphaned dispatched records (#1772)
+- dispatch guard uses dependency declarations instead of positional ordering (#1638) (#1770)
+- add configurable timeout to await_job to prevent indefinite session blocking (#1769)
+- **parallel**: restore orchestrator state from session files and add worker stderr logging (#1748)
+- prevent getLoadedSkills crash and auto-build workspace packages (#1767)
+- session lock multi-path cleanup and false positive hardening (#1578) (#1765)
+- robust node_modules symlink handling to prevent extension loading failures (#1762)
+- lazy-load @gsd/pi-tui in shared/ui.ts to prevent /exit crash (#1761)
+- validate worktree .git file and fix metrics toolCall casing (#1713) (#1754)
+- verify implementation artifacts before milestone completion (#1703) (#1760)
+- make task closeout crash-safe by unchecking orphaned checkboxes (#1650) (#1759)
+- preserve milestone branch on merge-back during transitions (#1573) (#1758)
+- write crash lock after newSession so it records correct session path (#1757)
+- handle symlinked .gsd in git add pathspec exclusions (#1712) (#1756)
+- guard worktree teardown on empty merge to prevent data loss (#1672) (#1755)
+- resolve symlinks in doctor orphaned-worktree check (#1715) (#1753)
+- silence spurious extension load error for non-extension libraries (#1709) (#1747)
+- reset completion state when post_unit_hooks retry_on signal is consumed (#1746)
+- route needs-discussion phase to showSmartEntry, preventing infinite /gsd loop (#1745)
+- **roadmap**: parse table-format slices in roadmap files (#1741)
+- extract milestone title from CONTEXT.md when ROADMAP is missing (#1729)
+- **gsd**: harden auto-mode telemetry — metrics idempotency, elapsed guard, title sanitization (#1722)
+- **gsd**: make saveJsonFile atomic via write-tmp-rename pattern (#1719)
+- **gsd**: syncWorktreeStateBack recurses into tasks/ subdirectory (#1678) (#1718)
+- prevent parallel worktree path resolution from escaping to home directory (#1677)
+- add web search budget awareness to discuss and queue prompts (#1702)
+- harden auto-mode against stale integration metadata and Windows file locks (#1633)
+- **autocomplete**: repair /gsd skip, add widget/next completions, add discuss to hint (#1675)
+- **search**: keep loop guard armed after firing to prevent infinite loop restart (#1671) (#1674)
+- **worktree**: detect default branch instead of hardcoding "main" on milestone merge (#1668) (#1669)
+- remove duplicate TUI header rendered on session_start (#1663)
+- **worktree**: recurse into tasks/ when syncing slice artifacts back to project root (#1678) (#1681)
+
+### Changed
+- split shared/mod.ts into pure and TUI-dependent barrels (#1807)
+- replace hardcoded /tmp paths with os.tmpdir()/homedir() (#1708)
+- **ci**: reduce pipeline minutes with shallow clones, npm caching, and exponential backoff (#1700)
+- split auto-loop.ts monolith into auto/ directory modules (#1682)
+
+## [2.40.0] - 2026-03-20
+
+### Added
+- **pi**: add Skill tool resolution (#1661)
+- health check phase 2 — real-time doctor issue visibility across widget, visualizer, and HTML reports (#1644)
+- upgrade forensics prompt to full-access GSD debugger (#1660)
+
+### Fixed
+- prune stale env-utils.js from extensions root, preventing startup load error (#1655)
+- **splash**: replace box corners with full-width bars for visual unity with auto-mode widget (#1654)
+- add runtime paths to forensics prompt to prevent path hallucination (#1657)
+- guard TUI render during session transitions to prevent freeze (#1658)
+- default UAT type to artifact-driven to prevent unnecessary auto-mode pauses (#1651)
+- cancel trailing async jobs on session switch to prevent wasted LLM turns (#1643)
+
+### Changed
+- decompose autoLoop into pipeline phases (#1615) (#1659)
+
+## [2.39.0] - 2026-03-20
+
+### Added
+- **gsd**: activate matching skills in dispatched prompts (#1630)
+- **gsd**: add .gsd/RUNTIME.md template for declared runtime context (#1626)
+- **gsd**: create draft PR on milestone completion when git.auto_pr enabled (#1627)
+- **gsd**: add browser-executable and runtime-executable UAT types (#1620)
+- apply model preferences in guided flow for milestone planning (#1614)
+- **gsd**: GitHub sync extension — auto-sync to Issues, PRs, Milestones (#1603)
+- add GSD_PROJECT_ID env var to override project hash (#1600)
+- add GSD_HOME env var to override global ~/.gsd directory (#1566)
+- **gsd**: add 13 enhancements to /gsd doctor (#1583)
+- feat(ui): minimal GSD welcome screen on startup (#1584)
+
+### Fixed
+- recover + prevent #1364 .gsd/ data-loss (v2.30.0–v2.38.0) (#1635)
+- treat summary as terminal artifact even when roadmap slices are unchecked (#1632)
+- **gsd**: close residual #1364 data-loss vectors on v2.36.0+ (#1637)
+- auto-resolve npm subpath exports in extension loader (#1624)
+- create node_modules symlink for dynamic import resolution in extensions (#1623)
+- filter cross-milestone errors from health tracker escalation (#1621)
+- move unit closeout to run immediately after completion (#1612)
+- use pathspec exclusions in smartStage to prevent hanging on large repos (#1613)
+- add auto-fix for premature slice completion deadlock in doctor (#1611)
+- resolve ${VAR} env references in MCP client .mcp.json configs (#1609)
+- return "dispatched" after doctor heal to prevent session race (#1580) (#1610)
+- update Anthropic OAuth endpoints to platform.claude.com (#1608)
+- lazy-open GSD database on first tool call in manual sessions (#1606)
+- **gsd**: detect anthropic-vertex in provider doctor (#1598)
+- **gsd**: tighten prompt automation contracts (#1556)
+- **gsd**: harden auto-mode agent loop — session teardown, unit correlation, sidecar perf (#1592)
+- break remaining shared/mod.js barrel imports in report generation chain (#1588)
+- apply pi manifest opt-out to extension-discovery.ts (#1545)
+- detect worktree paths resolved through .gsd symlinks (#1585)
+
+### Changed
+- **gsd**: unify sidecar mini-loop into main dispatch path (#1617)
+- **auto-loop**: initial cleanup — hoist constant, cache prefs per iteration (#1616)
+- **gsd**: add 30K char hard cap on prompt preamble (#1619)
+- **gsd**: replace stuck counter with sliding-window detection (#1618)
+- **auto-loop**: 5 code smell fixes (#1602)
+- **gsd**: replace session-scoped promise bridge with per-unit one-shot (#1595)
+- **gsd**: remove prompt compression subsystem (~4,100 lines) (#1597)
+- **gsd**: crashproof stopAuto with independent try/catch per cleanup step (#1596)
+
 ## [2.38.0] - 2026-03-20
 
 ### Added
@@ -175,6 +342,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - prevent false-positive 'Session lock lost' during auto-mode (#1257)
+
 
 ## [2.31.0] - 2026-03-18
 
@@ -1430,7 +1598,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - License updated to MIT
 
-[Unreleased]: https://github.com/gsd-build/gsd-2/compare/v2.38.0...HEAD
+[Unreleased]: https://github.com/gsd-build/gsd-2/compare/v2.41.0...HEAD
+[2.41.0]: https://github.com/gsd-build/gsd-2/compare/v2.40.0...v2.41.0
+[2.40.0]: https://github.com/gsd-build/gsd-2/compare/v2.39.0...v2.40.0
+[2.39.0]: https://github.com/gsd-build/gsd-2/compare/v2.38.0...v2.39.0
 [2.38.0]: https://github.com/gsd-build/gsd-2/compare/v2.37.1...v2.38.0
 [2.37.1]: https://github.com/gsd-build/gsd-2/compare/v2.37.0...v2.37.1
 [2.37.0]: https://github.com/gsd-build/gsd-2/compare/v2.36.0...v2.37.0
