@@ -11,7 +11,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { registerSearchTool } from "../resources/extensions/search-the-web/tool-search.ts";
+import { registerSearchTool, resetSearchLoopGuardState } from "../resources/extensions/search-the-web/tool-search.ts";
 import searchExtension from "../resources/extensions/search-the-web/index.ts";
 
 // =============================================================================
@@ -46,6 +46,45 @@ function mockFetch(body: unknown, status = 200) {
   });
   return () => {
     global.fetch = original;
+  };
+}
+
+/**
+ * Force search-provider selection to the Brave path for deterministic tests.
+ * CI may export multiple search API keys, and the real provider resolver
+ * prefers Tavily when present.
+ */
+function useBraveOnlySearchEnv(braveApiKey: string) {
+  const previousEnv = {
+    BRAVE_API_KEY: process.env.BRAVE_API_KEY,
+    TAVILY_API_KEY: process.env.TAVILY_API_KEY,
+    OLLAMA_API_KEY: process.env.OLLAMA_API_KEY,
+  };
+
+  process.env.BRAVE_API_KEY = braveApiKey;
+  delete process.env.TAVILY_API_KEY;
+  delete process.env.OLLAMA_API_KEY;
+  resetSearchLoopGuardState();
+
+  return () => {
+    resetSearchLoopGuardState();
+    if (previousEnv.BRAVE_API_KEY === undefined) {
+      delete process.env.BRAVE_API_KEY;
+    } else {
+      process.env.BRAVE_API_KEY = previousEnv.BRAVE_API_KEY;
+    }
+
+    if (previousEnv.TAVILY_API_KEY === undefined) {
+      delete process.env.TAVILY_API_KEY;
+    } else {
+      process.env.TAVILY_API_KEY = previousEnv.TAVILY_API_KEY;
+    }
+
+    if (previousEnv.OLLAMA_API_KEY === undefined) {
+      delete process.env.OLLAMA_API_KEY;
+    } else {
+      process.env.OLLAMA_API_KEY = previousEnv.OLLAMA_API_KEY;
+    }
   };
 }
 
@@ -100,7 +139,7 @@ async function callSearch(
  */
 
 test("search loop guard fires after MAX_CONSECUTIVE_DUPES duplicates", async () => {
-  process.env.BRAVE_API_KEY = "test-key-loop-guard";
+  const restoreEnv = useBraveOnlySearchEnv("test-key-loop-guard");
   const restoreFetch = mockFetch(makeBraveResponse());
 
   try {
@@ -127,12 +166,12 @@ test("search loop guard fires after MAX_CONSECUTIVE_DUPES duplicates", async () 
     );
   } finally {
     restoreFetch();
-    delete process.env.BRAVE_API_KEY;
+    restoreEnv();
   }
 });
 
 test("search loop guard resets at session_start boundary", async () => {
-  process.env.BRAVE_API_KEY = "test-key-loop-guard-session";
+  const restoreEnv = useBraveOnlySearchEnv("test-key-loop-guard-session");
   const restoreFetch = mockFetch(makeBraveResponse());
   const query = "session boundary query";
 
@@ -167,12 +206,12 @@ test("search loop guard resets at session_start boundary", async () => {
     );
   } finally {
     restoreFetch();
-    delete process.env.BRAVE_API_KEY;
+    restoreEnv();
   }
 });
 
 test("search loop guard stays armed after firing — subsequent duplicates immediately re-trigger (#1671)", async () => {
-  process.env.BRAVE_API_KEY = "test-key-loop-guard-2";
+  const restoreEnv = useBraveOnlySearchEnv("test-key-loop-guard-2");
   const restoreFetch = mockFetch(makeBraveResponse());
 
   // Use a unique query so module-level state from previous test doesn't interfere
@@ -209,12 +248,12 @@ test("search loop guard stays armed after firing — subsequent duplicates immed
     );
   } finally {
     restoreFetch();
-    delete process.env.BRAVE_API_KEY;
+    restoreEnv();
   }
 });
 
 test("search loop guard resets cleanly when a different query is issued", async () => {
-  process.env.BRAVE_API_KEY = "test-key-loop-guard-3";
+  const restoreEnv = useBraveOnlySearchEnv("test-key-loop-guard-3");
   const restoreFetch = mockFetch(makeBraveResponse());
 
   const queryA = "query alpha reset test";
@@ -239,6 +278,6 @@ test("search loop guard resets cleanly when a different query is issued", async 
     );
   } finally {
     restoreFetch();
-    delete process.env.BRAVE_API_KEY;
+    restoreEnv();
   }
 });

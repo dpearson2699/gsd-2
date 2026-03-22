@@ -69,8 +69,10 @@ function makeMockSession(opts?: {
  */
 function makeMockCtx() {
   return {
-    ui: { notify: () => {} },
+    ui: { notify: () => {}, setStatus: () => {} },
     model: { id: "test-model" },
+    modelRegistry: { getAvailable: () => [] },
+    getSystemPrompt: () => "",
   } as any;
 }
 
