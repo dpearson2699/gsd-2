@@ -79,7 +79,7 @@ async function main() {
 
       // Insert milestones from the main connection
       insertMilestone({
-        id: 'M001', title: 'From conn 1', status: 'active', seq: 1,
+        id: 'M001', title: 'From conn 1', status: 'active',
       });
 
       // Open two additional raw connections via openDatabase in separate calls.
@@ -89,12 +89,12 @@ async function main() {
 
       // Write M002
       insertMilestone({
-        id: 'M002', title: 'From conn 2', status: 'active', seq: 2,
+        id: 'M002', title: 'From conn 2', status: 'active',
       });
 
       // Write M003
       insertMilestone({
-        id: 'M003', title: 'From conn 3', status: 'active', seq: 3,
+        id: 'M003', title: 'From conn 3', status: 'active',
       });
 
       // Verify all 3 milestones are visible
@@ -126,7 +126,7 @@ async function main() {
 
       // Connection 1: write M001
       openDatabase(dbPath);
-      insertMilestone({ id: 'M001', title: 'Writer 1', status: 'active', seq: 1 });
+      insertMilestone({ id: 'M001', title: 'Writer 1', status: 'active' });
       closeDatabase();
 
       // Connection 2: write M002, verify sees M001
@@ -134,7 +134,7 @@ async function main() {
       const afterConn2Before = getAllMilestones();
       assertTrue(afterConn2Before.some(m => m.id === 'M001'),
         'rawconc: conn2 sees M001 from conn1');
-      insertMilestone({ id: 'M002', title: 'Writer 2', status: 'active', seq: 2 });
+      insertMilestone({ id: 'M002', title: 'Writer 2', status: 'active' });
       closeDatabase();
 
       // Connection 3: write M003, verify sees M001 + M002
@@ -144,7 +144,7 @@ async function main() {
         'rawconc: conn3 sees M001');
       assertTrue(afterConn3Before.some(m => m.id === 'M002'),
         'rawconc: conn3 sees M002');
-      insertMilestone({ id: 'M003', title: 'Writer 3', status: 'active', seq: 3 });
+      insertMilestone({ id: 'M003', title: 'Writer 3', status: 'active' });
 
       // Final read: all 3 visible
       const finalAll = getAllMilestones();
@@ -172,7 +172,7 @@ async function main() {
 
       // Insert a milestone in a transaction
       transaction(() => {
-        insertMilestone({ id: 'M001', title: 'In txn', status: 'active', seq: 1 });
+        insertMilestone({ id: 'M001', title: 'In txn', status: 'active' });
       });
 
       // Verify it committed
@@ -183,7 +183,7 @@ async function main() {
       let errorCaught = false;
       try {
         transaction(() => {
-          insertMilestone({ id: 'M002', title: 'Will fail', status: 'active', seq: 2 });
+          insertMilestone({ id: 'M002', title: 'Will fail', status: 'active' });
           throw new Error('Simulated failure');
         });
       } catch (err) {

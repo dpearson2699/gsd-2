@@ -328,7 +328,7 @@ async function main() {
       openDatabase(':memory:');
 
       // Pre-populate to simulate existing state
-      insertMilestone({ id: 'M001', title: 'Ghost', status: 'active', seq: 1 });
+      insertMilestone({ id: 'M001', title: 'Ghost', status: 'active' });
 
       // Clear and recover from empty
       clearHierarchyTables();
