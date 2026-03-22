@@ -1534,6 +1534,7 @@ export class AgentSession {
 		this._disconnectFromAgent();
 		await this.abort();
 		if (wasCancelled()) {
+			this._pendingBashMessages = [];
 			this._reconnectToAgent();
 			return false;
 		}
@@ -1547,6 +1548,7 @@ export class AgentSession {
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this._pendingNextTurnMessages = [];
+		this._pendingBashMessages = [];
 
 		this.sessionManager.appendThinkingLevelChange(this.thinkingLevel);
 
@@ -1565,6 +1567,7 @@ export class AgentSession {
 		if (options?.setup) {
 			await options.setup(this.sessionManager);
 			if (wasCancelled()) {
+				this._pendingBashMessages = [];
 				this._reconnectToAgent();
 				return false;
 			}
@@ -1574,6 +1577,7 @@ export class AgentSession {
 		}
 
 		if (wasCancelled()) {
+			this._pendingBashMessages = [];
 			this._reconnectToAgent();
 			return false;
 		}
@@ -2400,6 +2404,7 @@ export class AgentSession {
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this._pendingNextTurnMessages = [];
+		this._pendingBashMessages = [];
 
 		// Set new session
 		this.sessionManager.setSessionFile(sessionPath);

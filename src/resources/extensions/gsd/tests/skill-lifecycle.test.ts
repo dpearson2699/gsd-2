@@ -42,6 +42,40 @@ describe("skill-telemetry", () => {
     resetSkillTelemetry();
   });
 
+  it("captureAvailableSkills includes newly discovered skills from before_agent_start", async () => {
+    const { captureAvailableSkills, getAndClearSkills, resetSkillTelemetry } = await import("../skill-telemetry.js");
+
+    captureAvailableSkills(`
+<available_skills>
+  <skill>
+    <name>visible-skill</name>
+  </skill>
+</available_skills>
+<newly_discovered_skills>
+  <skill>
+    <name>discovered-skill</name>
+  </skill>
+</newly_discovered_skills>
+`);
+    assert.deepEqual(getAndClearSkills().sort(), ["discovered-skill", "visible-skill"]);
+    resetSkillTelemetry();
+  });
+
+  it("actively loaded skills override fallback available skills", async () => {
+    const { captureAvailableSkills, getAndClearSkills, recordSkillRead, resetSkillTelemetry } = await import("../skill-telemetry.js");
+
+    captureAvailableSkills(`
+<available_skills>
+  <skill>
+    <name>visible-skill</name>
+  </skill>
+</available_skills>
+`);
+    recordSkillRead("loaded-skill");
+    assert.deepEqual(getAndClearSkills(), ["loaded-skill"]);
+    resetSkillTelemetry();
+  });
+
   it("getSkillLastUsed returns most recent timestamp per skill", async () => {
     const { getSkillLastUsed } = await import("../skill-telemetry.js");
 

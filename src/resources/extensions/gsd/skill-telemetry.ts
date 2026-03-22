@@ -126,8 +126,13 @@ function listSkillNames(skillsDir: string): string[] {
 }
 
 function extractAvailableSkillNames(systemPrompt: string): string[] {
-  const match = systemPrompt.match(/<available_skills>([\s\S]*?)<\/available_skills>/i);
-  if (!match) return [];
-
-  return Array.from(match[1].matchAll(/<name>(.*?)<\/name>/g)).map((entry) => entry[1]);
+  const names = new Set<string>();
+  for (const tag of ["available_skills", "newly_discovered_skills"]) {
+    const match = systemPrompt.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i"));
+    if (!match) continue;
+    for (const entry of match[1].matchAll(/<name>(.*?)<\/name>/g)) {
+      names.add(entry[1]);
+    }
+  }
+  return Array.from(names);
 }

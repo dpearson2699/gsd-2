@@ -1120,6 +1120,7 @@ export class InteractiveMode {
 						this.chatContainer.clear();
 						this.pendingMessagesContainer.clear();
 						this.compactionQueuedMessages = [];
+						this.pendingBashComponents = [];
 						this.streamingComponent = undefined;
 						this.streamingMessage = undefined;
 						this.pendingTools.clear();
@@ -3266,6 +3267,7 @@ export class InteractiveMode {
 		// Clear UI state only after the switch succeeds
 		this.pendingMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
+		this.pendingBashComponents = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.pendingTools.clear();

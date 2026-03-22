@@ -13,6 +13,7 @@ import { loadFile, saveFile, formatContinue } from "../files.js";
 import { deriveState } from "../state.js";
 import { getAutoDashboardData, isAutoActive, isAutoPaused, markToolEnd, markToolStart } from "../auto.js";
 import { isParallelActive, shutdownParallel } from "../parallel-orchestrator.js";
+import { recordSkillRead } from "../skill-telemetry.js";
 import { checkToolCallLoop, resetToolCallLoopGuard } from "./tool-call-loop-guard.js";
 import { saveActivityLog } from "../activity-log.js";
 
@@ -137,6 +138,24 @@ export function registerHooks(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_result", async (event) => {
+    if (event.toolName === "Skill") {
+      const skillName = typeof (event.input as any)?.skill === "string" ? (event.input as any).skill : undefined;
+      if (skillName) {
+        recordSkillRead(skillName);
+      }
+    }
+
+    if (event.toolName === "read") {
+      const path = typeof (event.input as any)?.path === "string" ? (event.input as any).path : undefined;
+      if (path && /(?:^|\/)SKILL\.md$/i.test(path)) {
+        const parts = path.split(/[\\/]/).filter(Boolean);
+        const skillDir = parts.length >= 2 ? parts[parts.length - 2] : undefined;
+        if (skillDir) {
+          recordSkillRead(skillDir);
+        }
+      }
+    }
+
     if (event.toolName !== "ask_user_questions") return;
     const milestoneId = getDiscussionMilestoneId();
     const queueActive = isQueuePhaseActive();
