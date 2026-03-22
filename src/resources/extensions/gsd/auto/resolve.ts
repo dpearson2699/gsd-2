@@ -9,7 +9,6 @@
  */
 
 import type { UnitResult, AgentEndEvent } from "./types.js";
-import type { AutoSession } from "./session.js";
 import { debugLog } from "../debug-logger.js";
 
 // ─── Per-unit one-shot promise state ────────────────────────────────────────
@@ -110,12 +109,4 @@ export function _resetPendingResolve(): void {
   _currentResolve = null;
   _sessionSwitchInFlightToken = null;
   _nextSessionSwitchToken = 1;
-}
-
-/**
- * No-op for backward compatibility with tests that previously set the
- * active session. The module no longer holds a session reference.
- */
-export function _setActiveSession(_session: AutoSession | null): void {
-  // No-op — kept for test backward compatibility
 }

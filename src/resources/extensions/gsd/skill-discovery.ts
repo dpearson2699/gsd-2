@@ -53,11 +53,11 @@ export function detectNewSkills(cwd: string): DiscoveredSkill[] {
   for (const skill of current) {
     if (baselineSkills.has(skill.name) || skill.disableModelInvocation) continue;
 
-      newSkills.push({
-        name: skill.name,
-        description: skill.description,
-        location: skill.filePath,
-      });
+    newSkills.push({
+      name: skill.name,
+      description: skill.description,
+      location: skill.filePath,
+    });
   }
 
   return newSkills;
@@ -78,7 +78,7 @@ export function formatSkillsXml(skills: DiscoveredSkill[]): string {
 
   return `\n<newly_discovered_skills>
 The following skills were installed during this auto-mode session.
-Use the read tool to load a skill's file when the task matches its description.
+Use the Skill tool with the exact skill name when the task matches its description.
 
 ${entries}
 </newly_discovered_skills>`;

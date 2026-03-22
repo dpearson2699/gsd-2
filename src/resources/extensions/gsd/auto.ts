@@ -563,7 +563,9 @@ function handleLostSessionLock(
 function cleanupAfterLoopExit(ctx: ExtensionContext): void {
   s.currentUnit = null;
   s.active = false;
-  clearAutoResumeTimers();
+  // Do NOT clear auto-resume timers here — a provider-error pause may have
+  // scheduled an auto-resume timer that should fire after the loop exits.
+  // Timers are properly cleared in pauseAuto() and stopAuto() instead.
   resetProviderRecoveryState();
   clearUnitTimeout();
 

@@ -1180,9 +1180,9 @@ export async function runUnitPhase(
 
   return { action: "next", data: { unitStartedAt: s.currentUnit.startedAt } };
   } catch (err) {
-	deps.clearUnitTimeout();
-	emitUnitEnd("error", false);
-	throw err;
+    deps.clearUnitTimeout();
+    emitUnitEnd("error", false);
+    throw err;
   }
 }
 
