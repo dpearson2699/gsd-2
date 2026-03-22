@@ -77,6 +77,7 @@ function makeMockCtx() {
     ui: { notify: () => {}, setStatus: () => {} },
     model: { id: "test-model" },
     sessionManager: { getSessionFile: () => "/tmp/session.json" },
+    getSystemPrompt: () => "",
   } as any;
 }
 
