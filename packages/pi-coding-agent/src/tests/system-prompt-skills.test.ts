@@ -36,10 +36,9 @@ test("default prompt: includes skill catalog when no selectedTools (defaults)", 
 		skills: [sampleSkill],
 		cwd: "/project",
 	});
-	// When selectedTools is undefined, default tools are used — Skill is not
-	// among the defaults, so catalog should NOT appear here.
-	// This test documents current behavior: defaults do not include Skill.
-	assert.ok(!prompt.includes("<available_skills>"), "defaults without Skill should not include catalog");
+	// When selectedTools is undefined, the runtime always adds Skill as a built-in,
+	// so the catalog should be included to match runtime behavior.
+	assert.ok(prompt.includes("<available_skills>"), "defaults should include catalog");
 });
 
 test("default prompt: excludes skill catalog when neither Skill nor read is present", () => {
@@ -58,6 +57,15 @@ test("default prompt: excludes skill catalog when Skill present but no skills lo
 		cwd: "/project",
 	});
 	assert.ok(!prompt.includes("<available_skills>"), "empty skills list should produce no catalog");
+});
+
+test("default prompt: excludes skill catalog when selectedTools is empty array", () => {
+	const prompt = buildSystemPrompt({
+		selectedTools: [],
+		skills: [sampleSkill],
+		cwd: "/project",
+	});
+	assert.ok(!prompt.includes("<available_skills>"), "empty selectedTools array should exclude catalog");
 });
 
 // ─── Custom prompt path ────────────────────────────────────────────────────

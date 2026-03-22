@@ -232,8 +232,10 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 		}
 	}
 
-	// Append skills section (only if Skill tool is available)
-	const hasSkill = tools.includes("Skill");
+	// Append skills section (only if Skill tool is available).
+	// When selectedTools is unset (caller uses defaults), include skills — the runtime
+	// always adds Skill as a built-in, so omitting the catalog would be a mismatch.
+	const hasSkill = !selectedTools || tools.includes("Skill");
 	if (hasSkill && skills.length > 0) {
 		prompt += formatSkillsForPrompt(skills);
 	}
