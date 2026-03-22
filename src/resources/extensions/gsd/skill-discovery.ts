@@ -8,11 +8,7 @@
  * making them visible to all subsequent units without requiring a reload.
  */
 
-import { existsSync, readdirSync } from "node:fs";
-import { join } from "node:path";
-import { getAgentDir, loadSkillsFromDir } from "@gsd/pi-coding-agent";
-
-const SKILLS_DIR = join(getAgentDir(), "skills");
+import { loadSkills } from "@gsd/pi-coding-agent";
 
 export interface DiscoveredSkill {
   name: string;
@@ -26,8 +22,8 @@ let baselineSkills: Set<string> | null = null;
 /**
  * Snapshot the current skills directory. Call at auto-mode start.
  */
-export function snapshotSkills(): void {
-  baselineSkills = new Set(listSkillDirs());
+export function snapshotSkills(cwd: string): void {
+  baselineSkills = new Set(listSkillNames(cwd));
 }
 
 /**
@@ -48,24 +44,20 @@ export function hasSkillSnapshot(): boolean {
  * Detect skills installed since the snapshot was taken.
  * Returns skill metadata for any new skills found.
  */
-export function detectNewSkills(): DiscoveredSkill[] {
+export function detectNewSkills(cwd: string): DiscoveredSkill[] {
   if (!baselineSkills) return [];
 
-  const current = listSkillDirs();
+  const current = loadSkills({ cwd }).skills;
   const newSkills: DiscoveredSkill[] = [];
 
-  for (const dir of current) {
-    if (baselineSkills.has(dir)) continue;
+  for (const skill of current) {
+    if (baselineSkills.has(skill.name) || skill.disableModelInvocation) continue;
 
-    const result = loadSkillsFromDir({ dir: join(SKILLS_DIR, dir), source: "user" });
-    const skill = result.skills[0];
-    if (skill && !skill.disableModelInvocation) {
       newSkills.push({
         name: skill.name,
         description: skill.description,
         location: skill.filePath,
       });
-    }
   }
 
   return newSkills;
@@ -94,15 +86,8 @@ ${entries}
 
 // ─── Internals ────────────────────────────────────────────────────────────────
 
-function listSkillDirs(): string[] {
-  if (!existsSync(SKILLS_DIR)) return [];
-  try {
-    return readdirSync(SKILLS_DIR, { withFileTypes: true })
-      .filter(d => d.isDirectory())
-      .map(d => d.name);
-  } catch {
-    return [];
-  }
+function listSkillNames(cwd: string): string[] {
+  return loadSkills({ cwd }).skills.map((skill) => skill.name);
 }
 
 function escapeXml(text: string): string {

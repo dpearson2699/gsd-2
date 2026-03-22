@@ -94,7 +94,7 @@ export async function buildBeforeAgentStartResult(
 
   let newSkillsBlock = "";
   if (hasSkillSnapshot()) {
-    const newSkills = detectNewSkills();
+    const newSkills = detectNewSkills(process.cwd());
     if (newSkills.length > 0) {
       newSkillsBlock = formatSkillsXml(newSkills);
     }

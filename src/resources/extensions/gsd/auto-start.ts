@@ -571,7 +571,7 @@ export async function bootstrapAutoSession(
 
     // Snapshot installed skills
     if (resolveSkillDiscoveryMode() !== "off") {
-      snapshotSkills();
+      snapshotSkills(s.basePath);
     }
 
     ctx.ui.setStatus("gsd-auto", s.stepMode ? "next" : "auto");

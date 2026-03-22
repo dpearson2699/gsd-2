@@ -13,7 +13,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { getAgentDir } from "@gsd/pi-coding-agent";
+import { getAgentDir, loadSkills } from "@gsd/pi-coding-agent";
 
 // ─── In-memory state ──────────────────────────────────────────────────────────
 
@@ -88,6 +88,7 @@ export function getSkillLastUsed(units: Array<{ finishedAt: number; skills?: str
  * Returns skill names that should be deprioritized.
  */
 export function detectStaleSkills(
+	basePath: string,
   units: Array<{ finishedAt: number; skills?: string[] }>,
   thresholdDays: number,
 ): string[] {
@@ -98,8 +99,7 @@ export function detectStaleSkills(
   const stale: string[] = [];
 
   // Check all installed skills, not just those with usage data
-  const skillsDir = join(getAgentDir(), "skills");
-  const installed = listSkillNames(skillsDir);
+  const installed = loadSkills({ cwd: basePath }).skills.map((skill) => skill.name);
 
   for (const skill of installed) {
     const lastTs = lastUsed.get(skill);
@@ -112,19 +112,6 @@ export function detectStaleSkills(
 }
 
 // ─── Internals ────────────────────────────────────────────────────────────────
-
-function listSkillNames(skillsDir: string): string[] {
-  if (!existsSync(skillsDir)) return [];
-  try {
-    return readdirSync(skillsDir, { withFileTypes: true })
-      .filter(d => d.isDirectory() && !d.name.startsWith("."))
-      .filter(d => existsSync(join(skillsDir, d.name, "SKILL.md")))
-      .map(d => d.name);
-  } catch {
-    return [];
-  }
-}
-
 function extractAvailableSkillNames(systemPrompt: string): string[] {
   const names = new Set<string>();
   for (const tag of ["available_skills", "newly_discovered_skills"]) {
