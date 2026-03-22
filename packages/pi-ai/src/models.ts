@@ -12,12 +12,15 @@ for (const [provider, models] of Object.entries(MODELS)) {
 	modelRegistry.set(provider, providerModels);
 }
 
+/** Providers that have entries in the generated MODELS constant */
+type GeneratedProvider = keyof typeof MODELS & KnownProvider;
+
 type ModelApi<
-	TProvider extends KnownProvider,
+	TProvider extends GeneratedProvider,
 	TModelId extends keyof (typeof MODELS)[TProvider],
 > = (typeof MODELS)[TProvider][TModelId] extends { api: infer TApi } ? (TApi extends Api ? TApi : never) : never;
 
-export function getModel<TProvider extends KnownProvider, TModelId extends keyof (typeof MODELS)[TProvider]>(
+export function getModel<TProvider extends GeneratedProvider, TModelId extends keyof (typeof MODELS)[TProvider]>(
 	provider: TProvider,
 	modelId: TModelId,
 ): Model<ModelApi<TProvider, TModelId>> {
@@ -31,9 +34,9 @@ export function getProviders(): KnownProvider[] {
 
 export function getModels<TProvider extends KnownProvider>(
 	provider: TProvider,
-): Model<ModelApi<TProvider, keyof (typeof MODELS)[TProvider]>>[] {
+): Model<Api>[] {
 	const models = modelRegistry.get(provider);
-	return models ? (Array.from(models.values()) as Model<ModelApi<TProvider, keyof (typeof MODELS)[TProvider]>>[]) : [];
+	return models ? (Array.from(models.values()) as Model<Api>[]) : [];
 }
 
 export function calculateCost<TApi extends Api>(model: Model<TApi>, usage: Usage): Usage["cost"] {
