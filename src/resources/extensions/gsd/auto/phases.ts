@@ -1049,23 +1049,6 @@ export async function runUnitPhase(
     status: unitResult.status,
   });
 
-  // Now that runUnit has called newSession(), the session file path is correct.
-  const sessionFile = deps.getSessionFile(ctx);
-  deps.updateSessionLock(
-    deps.lockBase(),
-    unitType,
-    unitId,
-    s.completedUnits.length,
-    sessionFile,
-  );
-  deps.writeLock(
-    deps.lockBase(),
-    unitType,
-    unitId,
-    s.completedUnits.length,
-    sessionFile,
-  );
-
   // Tag the most recent window entry with error info for stuck detection
   if (unitResult.status === "error" || unitResult.status === "cancelled") {
     const lastEntry = loopState.recentUnits[loopState.recentUnits.length - 1];
@@ -1085,6 +1068,7 @@ export async function runUnitPhase(
 
   if (unitResult.status === "cancelled") {
   deps.clearUnitTimeout();
+  deps.clearUnitRuntimeRecord(s.basePath, unitType, unitId);
   emitUnitEnd(unitResult.status, false);
     ctx.ui.notify(
     `Session creation timed out or was cancelled for ${unitType} ${unitId}. Retrying.`,
@@ -1093,6 +1077,23 @@ export async function runUnitPhase(
   debugLog("autoLoop", { phase: "continue", reason: "session-failed-retry" });
   return { action: "continue" };
   }
+
+  // Now that runUnit has called newSession(), the session file path is correct.
+  const sessionFile = deps.getSessionFile(ctx);
+  deps.updateSessionLock(
+    deps.lockBase(),
+    unitType,
+    unitId,
+    s.completedUnits.length,
+    sessionFile,
+  );
+  deps.writeLock(
+    deps.lockBase(),
+    unitType,
+    unitId,
+    s.completedUnits.length,
+    sessionFile,
+  );
 
   // ── Immediate unit closeout (metrics, activity log, memory) ────────
   // Run right after runUnit() returns so telemetry is never lost to a

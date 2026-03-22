@@ -1,3 +1,5 @@
+import { scheduleAutoResumeTimer } from "./auto-resume-timers.js";
+
 export type ProviderErrorPauseUI = {
   notify(message: string, level?: "info" | "warning" | "error" | "success"): void;
 };
@@ -74,13 +76,13 @@ export async function pauseAutoForProviderError(
     await pause();
 
     // Schedule auto-resume after the delay
-    setTimeout(() => {
+    scheduleAutoResumeTimer(options!.retryAfterMs!, () => {
       const resumeMsg = options!.isRateLimit
         ? "Rate limit window elapsed. Resuming auto-mode."
         : "Server error recovery delay elapsed. Resuming auto-mode.";
       ui.notify(resumeMsg, "info");
       options!.resume!();
-    }, options!.retryAfterMs!);
+    });
   } else {
     ui.notify(`Auto-mode paused due to provider error${errorDetail}`, "warning");
     await pause();

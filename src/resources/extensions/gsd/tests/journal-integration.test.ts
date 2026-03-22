@@ -394,7 +394,15 @@ test("all events from a mock iteration have monotonically increasing seq and sam
 
 test("runUnitPhase emits unit-end with cancelled status when session creation fails", async () => {
   const capture = createEventCapture();
+  let clearedRuntimeRecord = false;
+  let updatedSessionLock = false;
   const deps = makeMockDeps(capture);
+  deps.clearUnitRuntimeRecord = () => {
+    clearedRuntimeRecord = true;
+  };
+  deps.updateSessionLock = () => {
+    updatedSessionLock = true;
+  };
   const ic = makeIC(deps);
   (ic.s as any).cmdCtx.newSession = () => Promise.resolve({ cancelled: true });
 
@@ -423,6 +431,8 @@ test("runUnitPhase emits unit-end with cancelled status when session creation fa
   assert.equal((endEvents[0].data as any).status, "cancelled");
   assert.equal((endEvents[0].data as any).artifactVerified, false);
   assert.equal(endEvents[0].causedBy?.seq, startEvents[0].seq);
+  assert.equal(clearedRuntimeRecord, true, "cancelled path should clear the stale runtime record");
+  assert.equal(updatedSessionLock, false, "cancelled path should not attach a session file to the session lock");
 });
 
 test("runUnitPhase emits unit-end with error status when setup fails after unit-start", async () => {

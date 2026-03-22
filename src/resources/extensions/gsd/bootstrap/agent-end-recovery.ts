@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@gsd/pi-coding-agent";
 
 import { checkAutoStartAfterDiscuss } from "../guided-flow.js";
 import { getAutoDashboardData, getAutoModeStartModel, isAutoActive, pauseAuto } from "../auto.js";
+import { scheduleAutoResumeTimer } from "../auto-resume-timers.js";
 import { getNextFallbackModel, isTransientNetworkError, resolveModelWithFallbacksForUnit } from "../preferences.js";
 import { classifyProviderError, pauseAutoForProviderError } from "../provider-error-pause.js";
 import { isSessionSwitchInFlight, resolveAgentEnd } from "../auto-loop.js";
@@ -42,12 +43,13 @@ export async function handleAgentEnd(
         const attempt = currentRetries + 1;
         const delayMs = attempt * 3000;
         ctx.ui.notify(`Network error on ${currentModelId}${errorDetail}. Retry ${attempt}/${maxRetries} in ${delayMs / 1000}s...`, "warning");
-        setTimeout(() => {
+        scheduleAutoResumeTimer(delayMs, () => {
+          if (!isAutoActive()) return;
           pi.sendMessage(
             { customType: "gsd-auto-timeout-recovery", content: "Continue execution — retrying after transient network error.", display: false },
             { triggerTurn: true },
           );
-        }, delayMs);
+        });
         return;
       }
       networkRetryCounters.delete(retryKey);
@@ -115,6 +117,7 @@ export async function handleAgentEnd(
       retryAfterMs,
       resume: allowAutoResume
         ? () => {
+          if (!isAutoActive()) return;
           pi.sendMessage(
             { customType: "gsd-auto-timeout-recovery", content: "Continue execution — provider error recovery delay elapsed.", display: false },
             { triggerTurn: true },

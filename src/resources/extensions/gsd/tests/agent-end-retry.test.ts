@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { registerHooks } from "../bootstrap/register-hooks.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AUTO_TS_PATH = join(__dirname, "..", "auto.ts");
@@ -110,6 +111,30 @@ test("bootstrap handleAgentEnd guards session switches and resolves agent_end on
     source.includes("resolveAgentEnd(event)"),
     "bootstrap handleAgentEnd must resolve the pending unit on the live path",
   );
+});
+
+test("registerHooks installs an executable live agent_end handler", async () => {
+  const handlers = new Map<string, (...args: any[]) => any>();
+  const pi = {
+    on: (eventName: string, handler: (...args: any[]) => any) => {
+      handlers.set(eventName, handler);
+    },
+    sendMessage: () => {},
+  } as any;
+
+  registerHooks(pi);
+
+  const agentEndHandler = handlers.get("agent_end");
+  assert.equal(typeof agentEndHandler, "function", "registerHooks must register an agent_end handler");
+
+  const ctx = {
+    ui: { notify: () => {} },
+    modelRegistry: { getAvailable: () => [] },
+  } as any;
+
+  await assert.doesNotReject(async () => {
+    await agentEndHandler?.({ messages: [{ role: "assistant" }] }, ctx);
+  });
 });
 
 test("handleAgentEnd early return calls resolveAgentEndCancelled", () => {
