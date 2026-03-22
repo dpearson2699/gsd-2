@@ -11,9 +11,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { registerHooks } from "../bootstrap/register-hooks.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const AUTO_TS_PATH = join(__dirname, "..", "auto.ts");
+const BOOTSTRAP_AGENT_END_PATH = join(__dirname, "..", "bootstrap", "agent-end-recovery.ts");
+const REGISTER_HOOKS_PATH = join(__dirname, "..", "bootstrap", "register-hooks.ts");
 const AUTO_RESOLVE_TS_PATH = join(__dirname, "..", "auto", "resolve.ts");
 const SESSION_TS_PATH = join(__dirname, "..", "auto", "session.ts");
 
@@ -23,6 +26,14 @@ function getAutoTsSource(): string {
 
 function getAutoResolveTsSource(): string {
   return readFileSync(AUTO_RESOLVE_TS_PATH, "utf-8");
+}
+
+function getBootstrapAgentEndSource(): string {
+  return readFileSync(BOOTSTRAP_AGENT_END_PATH, "utf-8");
+}
+
+function getRegisterHooksSource(): string {
+  return readFileSync(REGISTER_HOOKS_PATH, "utf-8");
 }
 
 function getSessionTsSource(): string {
@@ -82,6 +93,58 @@ test("handleAgentEnd is a thin compatibility wrapper", () => {
   );
 });
 
+test("bootstrap register-hooks wires agent_end to the live bootstrap handler", () => {
+  const source = getRegisterHooksSource();
+  assert.ok(
+    source.includes('await handleAgentEnd(pi, event, ctx);'),
+    "register-hooks must route agent_end events through bootstrap/agent-end-recovery.ts",
+  );
+});
+
+test("bootstrap handleAgentEnd guards session switches and resolves agent_end on the live path", () => {
+  const source = getBootstrapAgentEndSource();
+  assert.ok(
+    source.includes("isSessionSwitchInFlight()"),
+    "bootstrap handleAgentEnd must guard against session-switch agent_end events",
+  );
+  assert.ok(
+    source.includes("resolveAgentEnd(event)"),
+    "bootstrap handleAgentEnd must resolve the pending unit on the live path",
+  );
+});
+
+test("bootstrap provider recovery resumes paused auto-mode through resumeAutoAfterDelay", () => {
+  const source = getBootstrapAgentEndSource();
+  assert.ok(
+    source.includes("resumeAutoAfterDelay(pi)"),
+    "bootstrap provider recovery must resume paused auto-mode through the real resume path",
+  );
+});
+
+test("registerHooks installs an executable live agent_end handler", async () => {
+  const handlers = new Map<string, (...args: any[]) => any>();
+  const pi = {
+    on: (eventName: string, handler: (...args: any[]) => any) => {
+      handlers.set(eventName, handler);
+    },
+    sendMessage: () => {},
+  } as any;
+
+  registerHooks(pi);
+
+  const agentEndHandler = handlers.get("agent_end");
+  assert.equal(typeof agentEndHandler, "function", "registerHooks must register an agent_end handler");
+
+  const ctx = {
+    ui: { notify: () => {} },
+    modelRegistry: { getAvailable: () => [] },
+  } as any;
+
+  await assert.doesNotReject(async () => {
+    await agentEndHandler?.({ messages: [{ role: "assistant" }] }, ctx);
+  });
+});
+
 test("handleAgentEnd early return calls resolveAgentEndCancelled", () => {
   const source = getAutoTsSource();
   const fnIdx = source.indexOf("export async function handleAgentEnd");
@@ -102,7 +165,7 @@ test("pauseAuto calls resolveAgentEndCancelled to unblock the loop", () => {
   const fnBlock = source.slice(fnIdx, source.indexOf("\n/**\n * Build", fnIdx + 100));
 
   assert.ok(
-    fnBlock.includes("resolveAgentEndCancelled()"),
+    fnBlock.includes("resolveAgentEndCancelled("),
     "pauseAuto must call resolveAgentEndCancelled to unblock the auto-loop promise",
   );
 });

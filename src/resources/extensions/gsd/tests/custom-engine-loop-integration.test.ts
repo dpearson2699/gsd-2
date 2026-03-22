@@ -12,7 +12,8 @@ import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { autoLoop, resolveAgentEnd, _resetPendingResolve } from "../auto-loop.js";
+import { autoLoop, resolveAgentEnd } from "../auto-loop.js";
+import { _resetPendingResolve } from "../auto/resolve.js";
 import type { LoopDeps } from "../auto/loop-deps.js";
 import type { SessionLockStatus } from "../session-lock.js";
 import { writeGraph, readGraph, type WorkflowGraph, type GraphStep } from "../graph.ts";
@@ -76,6 +77,7 @@ function makeMockCtx() {
     ui: { notify: () => {}, setStatus: () => {} },
     model: { id: "test-model" },
     sessionManager: { getSessionFile: () => "/tmp/session.json" },
+    getSystemPrompt: () => "",
   } as any;
 }
 

@@ -138,6 +138,8 @@ import {
 import { join } from "node:path";
 import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { atomicWriteSync } from "./atomic-write.js";
+import { clearAutoResumeTimers } from "./auto-resume-timers.js";
+import { clearNetworkRetryCounts, resetProviderRecoveryState } from "./provider-recovery-state.js";
 import {
   autoCommitCurrentBranch,
   captureIntegrationBranch,
@@ -205,7 +207,8 @@ import {
   postUnitPostVerification,
 } from "./auto-post-unit.js";
 import { bootstrapAutoSession, type BootstrapDeps } from "./auto-start.js";
-import { autoLoop, resolveAgentEnd, resolveAgentEndCancelled, _resetPendingResolve, isSessionSwitchInFlight, type LoopDeps } from "./auto-loop.js";
+import { autoLoop, resolveAgentEnd, resolveAgentEndCancelled, isSessionSwitchInFlight, type LoopDeps } from "./auto-loop.js";
+import { _resetPendingResolve } from "./auto/resolve.js";
 import {
   WorktreeResolver,
   type WorktreeResolverDeps,
@@ -362,6 +365,17 @@ export function isAutoActive(): boolean {
 
 export function isAutoPaused(): boolean {
   return s.paused;
+}
+
+export async function resumeAutoAfterDelay(
+  pi: ExtensionAPI,
+): Promise<void> {
+  if (!s.paused) return;
+  const base = s.originalBasePath || s.basePath;
+  if (!base || !s.cmdCtx) return;
+  await startAuto(s.cmdCtx, pi, base, s.verbose, {
+    step: s.stepMode,
+  });
 }
 
 export function setActiveEngineId(id: string | null): void {
@@ -534,6 +548,8 @@ function handleLostSessionLock(
   });
   s.active = false;
   s.paused = false;
+  clearAutoResumeTimers();
+  resetProviderRecoveryState();
   clearUnitTimeout();
   deregisterSigtermHandler();
   clearCmuxSidebar(loadEffectiveGSDPreferences()?.preferences);
@@ -569,6 +585,12 @@ function handleLostSessionLock(
 function cleanupAfterLoopExit(ctx: ExtensionContext): void {
   s.currentUnit = null;
   s.active = false;
+  // Do NOT clear auto-resume timers here — a provider-error pause may have
+  // scheduled an auto-resume timer that should fire after the loop exits.
+  // Timers are properly cleared in pauseAuto() and stopAuto() instead.
+  // Only clear network retry counters — preserve consecutiveTransientErrors
+  // so MAX_TRANSIENT_AUTO_RESUMES escalation works across pause/resume cycles.
+  clearNetworkRetryCounts();
   clearUnitTimeout();
 
   ctx.ui.setStatus("gsd-auto", undefined);
@@ -598,6 +620,8 @@ export async function stopAuto(
   try {
     // ── Step 1: Timers and locks ──
     try {
+      clearAutoResumeTimers();
+      resetProviderRecoveryState();
       clearUnitTimeout();
       if (lockBase()) clearLock(lockBase());
       if (lockBase()) releaseSessionLock(lockBase());
@@ -788,9 +812,13 @@ export async function pauseAuto(
   _pi?: ExtensionAPI,
 ): Promise<void> {
   if (!s.active) return;
+  clearAutoResumeTimers();
+  // Only clear network retry counters — preserve consecutiveTransientErrors
+  // so MAX_TRANSIENT_AUTO_RESUMES escalation works across pause/resume cycles.
+  clearNetworkRetryCounts();
   clearUnitTimeout();
   // Unblock any pending unit promise so the auto-loop is not orphaned.
-  resolveAgentEndCancelled();
+  resolveAgentEndCancelled("paused");
 
   s.pausedSessionFile = ctx?.sessionManager?.getSessionFile() ?? null;
 
@@ -1149,6 +1177,10 @@ export async function startAuto(
       return;
     }
 
+    clearAutoResumeTimers();
+    // Only clear network retry counters — preserve consecutiveTransientErrors
+    // so MAX_TRANSIENT_AUTO_RESUMES escalation works across pause/resume cycles.
+    clearNetworkRetryCounts();
     s.paused = false;
     s.active = true;
     s.verbose = verboseMode;

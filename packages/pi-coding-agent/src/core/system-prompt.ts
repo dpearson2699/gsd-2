@@ -12,6 +12,7 @@ const toolDescriptions: Record<string, string> = {
 	bash: "Execute bash commands (ls, grep, find, etc.)",
 	edit: "Make surgical edits to files (find exact text and replace)",
 	write: "Create or overwrite files",
+	Skill: "Expand and execute a model-visible installed skill by name (hidden skills require explicit /skill:name)",
 	grep: "Search file contents for patterns (respects .gitignore)",
 	find: "Find files by glob pattern (respects .gitignore)",
 	ls: "List directory contents",
@@ -21,7 +22,7 @@ const toolDescriptions: Record<string, string> = {
 export interface BuildSystemPromptOptions {
 	/** Custom system prompt (replaces default). */
 	customPrompt?: string;
-	/** Tools to include in prompt. Default: [read, bash, edit, write] */
+	/** Tools to include in prompt. Default: [read, bash, edit, write, lsp, Skill] */
 	selectedTools?: string[];
 	/** Optional one-line tool snippets keyed by tool name. */
 	toolSnippets?: Record<string, string>;
@@ -67,6 +68,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
+	const tools = selectedTools ?? ["read", "bash", "edit", "write", "lsp", "Skill"];
 
 	if (customPrompt) {
 		let prompt = customPrompt;
@@ -84,9 +86,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 			}
 		}
 
-		// Append skills section (only if read tool is available)
-		const customPromptHasRead = !selectedTools || selectedTools.includes("read");
-		if (customPromptHasRead && skills.length > 0) {
+		// Append skills section (only if Skill tool is available)
+		const customPromptHasSkill = tools.includes("Skill");
+		if (customPromptHasSkill && skills.length > 0) {
 			prompt += formatSkillsForPrompt(skills);
 		}
 
@@ -115,7 +117,6 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 
 	// Build tools list based on selected tools.
 	// Built-ins use toolDescriptions. Custom tools can provide one-line snippets.
-	const tools = selectedTools || ["read", "bash", "edit", "write"];
 	const toolsList =
 		tools.length > 0
 			? tools
@@ -232,8 +233,9 @@ Pi documentation (read only when the user asks about pi itself, its SDK, extensi
 		}
 	}
 
-	// Append skills section (only if read tool is available)
-	if (hasRead && skills.length > 0) {
+	// Append skills section (only if Skill tool is available)
+	const hasSkill = tools.includes("Skill");
+	if (hasSkill && skills.length > 0) {
 		prompt += formatSkillsForPrompt(skills);
 	}
 

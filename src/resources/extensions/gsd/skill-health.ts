@@ -88,7 +88,7 @@ export function generateSkillHealthReport(basePath: string, staleDays?: number):
 
   const skillMap = aggregateBySkill(unitsWithSkills);
   const skills = Array.from(skillMap.values()).sort((a, b) => b.totalUses - a.totalUses);
-  const staleSkills = detectStaleSkills(unitsWithSkills, threshold);
+  const staleSkills = detectStaleSkills(basePath, unitsWithSkills, threshold);
   const decliningSkills = skills.filter(s => s.flagged).map(s => s.name);
   const suggestions = generateSuggestions(skills, staleSkills);
 
@@ -284,7 +284,7 @@ export function computeStaleAvoidList(
 ): string[] {
   const ledger = loadLedgerFromDisk(basePath);
   const units = (ledger?.units ?? []).filter(u => u.skills && u.skills.length > 0);
-  const stale = detectStaleSkills(units, staleDays ?? DEFAULT_STALE_DAYS);
+  const stale = detectStaleSkills(basePath, units, staleDays ?? DEFAULT_STALE_DAYS);
   const avoidSet = new Set(currentAvoidList);
 
   return stale.filter(s => !avoidSet.has(s));

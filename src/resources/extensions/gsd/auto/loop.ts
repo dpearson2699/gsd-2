@@ -1,7 +1,7 @@
 /**
  * auto/loop.ts — Main auto-mode execution loop.
  *
- * Iterates: derive → dispatch → guards → runUnit → finalize → repeat.
+ * Iterates: pre-dispatch → guards → dispatch → runUnit → finalize → repeat.
  * Exits when s.active becomes false or a terminal condition is reached.
  *
  * Imports from: auto/types, auto/resolve, auto/phases
@@ -179,6 +179,7 @@ export async function autoLoop(
         // ── Unit execution (shared with dev path) ──
         const unitPhaseResult = await runUnitPhase(ic, iterData, loopState);
         if (unitPhaseResult.action === "break") break;
+        if (unitPhaseResult.action === "continue") continue;
 
         // ── Verify first, then reconcile (only mark complete on pass) ──
         debugLog("autoLoop", { phase: "custom-engine-verify", iteration, unitId: iterData.unitId });
@@ -219,6 +220,7 @@ export async function autoLoop(
         // ── Phase 2: Guards ───────────────────────────────────────────────
         const guardsResult = await runGuards(ic, preData.mid);
         if (guardsResult.action === "break") break;
+        if (guardsResult.action === "continue") continue;
 
         // ── Phase 3: Dispatch ─────────────────────────────────────────────
         const dispatchResult = await runDispatch(ic, preData, loopState);
@@ -244,6 +246,7 @@ export async function autoLoop(
 
       const unitPhaseResult = await runUnitPhase(ic, iterData, loopState, sidecarItem);
       if (unitPhaseResult.action === "break") break;
+      if (unitPhaseResult.action === "continue") continue;
 
       // ── Phase 5: Finalize ───────────────────────────────────────────────
 

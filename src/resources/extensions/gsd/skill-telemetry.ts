@@ -6,14 +6,14 @@
  * "actively loaded" skills (read via tool calls during execution).
  *
  * Data flow:
- *   1. At dispatch, captureAvailableSkills() records skills from the system prompt
+ *   1. At dispatch, captureAvailableSkills() records skills from the rendered system prompt
  *   2. During execution, recordSkillRead() tracks explicit SKILL.md reads
  *   3. At unit completion, getAndClearSkills() returns the loaded list for metrics
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { getAgentDir } from "@gsd/pi-coding-agent";
+import { getAgentDir, loadSkills } from "@gsd/pi-coding-agent";
 
 // ─── In-memory state ──────────────────────────────────────────────────────────
 
@@ -29,9 +29,8 @@ const activelyLoadedSkills = new Set<string>();
  * Capture the list of available skill names at dispatch time.
  * Called before each unit starts.
  */
-export function captureAvailableSkills(): void {
-  const skillsDir = join(getAgentDir(), "skills");
-  availableSkills = listSkillNames(skillsDir);
+export function captureAvailableSkills(systemPrompt: string): void {
+  availableSkills = extractAvailableSkillNames(systemPrompt);
   activelyLoadedSkills.clear();
 }
 
@@ -89,6 +88,7 @@ export function getSkillLastUsed(units: Array<{ finishedAt: number; skills?: str
  * Returns skill names that should be deprioritized.
  */
 export function detectStaleSkills(
+	basePath: string,
   units: Array<{ finishedAt: number; skills?: string[] }>,
   thresholdDays: number,
 ): string[] {
@@ -99,8 +99,9 @@ export function detectStaleSkills(
   const stale: string[] = [];
 
   // Check all installed skills, not just those with usage data
-  const skillsDir = join(getAgentDir(), "skills");
-  const installed = listSkillNames(skillsDir);
+  const installed = loadSkills({ cwd: basePath }).skills
+    .filter((skill) => !skill.disableModelInvocation)
+    .map((skill) => skill.name);
 
   for (const skill of installed) {
     const lastTs = lastUsed.get(skill);
@@ -113,15 +114,14 @@ export function detectStaleSkills(
 }
 
 // ─── Internals ────────────────────────────────────────────────────────────────
-
-function listSkillNames(skillsDir: string): string[] {
-  if (!existsSync(skillsDir)) return [];
-  try {
-    return readdirSync(skillsDir, { withFileTypes: true })
-      .filter(d => d.isDirectory() && !d.name.startsWith("."))
-      .filter(d => existsSync(join(skillsDir, d.name, "SKILL.md")))
-      .map(d => d.name);
-  } catch {
-    return [];
+function extractAvailableSkillNames(systemPrompt: string): string[] {
+  const names = new Set<string>();
+  for (const tag of ["available_skills", "newly_discovered_skills"]) {
+    const match = systemPrompt.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i"));
+    if (!match) continue;
+    for (const entry of match[1].matchAll(/<name>(.*?)<\/name>/g)) {
+      names.add(entry[1]);
+    }
   }
+  return Array.from(names);
 }

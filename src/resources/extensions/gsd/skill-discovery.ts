@@ -8,11 +8,7 @@
  * making them visible to all subsequent units without requiring a reload.
  */
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-import { getAgentDir } from "@gsd/pi-coding-agent";
-
-const SKILLS_DIR = join(getAgentDir(), "skills");
+import { loadSkills } from "@gsd/pi-coding-agent";
 
 export interface DiscoveredSkill {
   name: string;
@@ -26,8 +22,8 @@ let baselineSkills: Set<string> | null = null;
 /**
  * Snapshot the current skills directory. Call at auto-mode start.
  */
-export function snapshotSkills(): void {
-  baselineSkills = new Set(listSkillDirs());
+export function snapshotSkills(cwd: string): void {
+  baselineSkills = new Set(listSkillNames(cwd));
 }
 
 /**
@@ -48,26 +44,20 @@ export function hasSkillSnapshot(): boolean {
  * Detect skills installed since the snapshot was taken.
  * Returns skill metadata for any new skills found.
  */
-export function detectNewSkills(): DiscoveredSkill[] {
+export function detectNewSkills(cwd: string): DiscoveredSkill[] {
   if (!baselineSkills) return [];
 
-  const current = listSkillDirs();
+  const current = loadSkills({ cwd }).skills;
   const newSkills: DiscoveredSkill[] = [];
 
-  for (const dir of current) {
-    if (baselineSkills.has(dir)) continue;
+  for (const skill of current) {
+    if (baselineSkills.has(skill.name) || skill.disableModelInvocation) continue;
 
-    const skillMdPath = join(SKILLS_DIR, dir, "SKILL.md");
-    if (!existsSync(skillMdPath)) continue;
-
-    const meta = parseSkillFrontmatter(skillMdPath);
-    if (meta) {
-      newSkills.push({
-        name: meta.name || dir,
-        description: meta.description || `Skill: ${dir}`,
-        location: skillMdPath,
-      });
-    }
+    newSkills.push({
+      name: skill.name,
+      description: skill.description,
+      location: skill.filePath,
+    });
   }
 
   return newSkills;
@@ -88,7 +78,7 @@ export function formatSkillsXml(skills: DiscoveredSkill[]): string {
 
   return `\n<newly_discovered_skills>
 The following skills were installed during this auto-mode session.
-Use the read tool to load a skill's file when the task matches its description.
+Use the Skill tool with the exact skill name when the task matches its description.
 
 ${entries}
 </newly_discovered_skills>`;
@@ -96,38 +86,8 @@ ${entries}
 
 // ─── Internals ────────────────────────────────────────────────────────────────
 
-function listSkillDirs(): string[] {
-  if (!existsSync(SKILLS_DIR)) return [];
-  try {
-    return readdirSync(SKILLS_DIR, { withFileTypes: true })
-      .filter(d => d.isDirectory())
-      .map(d => d.name);
-  } catch {
-    return [];
-  }
-}
-
-function parseSkillFrontmatter(path: string): { name?: string; description?: string } | null {
-  try {
-    const content = readFileSync(path, "utf-8");
-    // Use indexOf instead of [\s\S]*? regex to avoid backtracking (#468)
-    if (!content.startsWith('---\n')) return null;
-    const endIdx = content.indexOf('\n---', 4);
-    if (endIdx === -1) return null;
-
-    const fm = content.slice(4, endIdx);
-    const result: { name?: string; description?: string } = {};
-
-    const nameMatch = fm.match(/^name:\s*(.+)$/m);
-    if (nameMatch) result.name = nameMatch[1].trim();
-
-    const descMatch = fm.match(/^description:\s*(.+)$/m);
-    if (descMatch) result.description = descMatch[1].trim();
-
-    return result;
-  } catch {
-    return null;
-  }
+function listSkillNames(cwd: string): string[] {
+  return loadSkills({ cwd }).skills.map((skill) => skill.name);
 }
 
 function escapeXml(text: string): string {
@@ -135,5 +95,6 @@ function escapeXml(text: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }

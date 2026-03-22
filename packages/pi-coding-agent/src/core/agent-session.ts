@@ -158,7 +158,7 @@ export interface AgentSessionConfig {
 	customTools?: ToolDefinition[];
 	/** Model registry for API key resolution and model discovery */
 	modelRegistry: ModelRegistry;
-	/** Initial active built-in tool names. Default: [read, bash, edit, write] */
+	/** Initial active tool names. Built-ins like Skill are always preserved. */
 	initialActiveToolNames?: string[];
 	/** Override base tools (useful for custom runtimes). */
 	baseToolsOverride?: Record<string, AgentTool>;
@@ -376,6 +376,12 @@ export class AgentSession {
 
 	// Track last assistant message for auto-compaction check
 	private _lastAssistantMessage: AssistantMessage | undefined = undefined;
+	private _pendingSessionSwitchEpoch = 0;
+	private _cancelledSessionSwitchEpoch = 0;
+
+	cancelPendingNewSession(): void {
+		this._cancelledSessionSwitchEpoch = this._pendingSessionSwitchEpoch;
+	}
 
 	/** Internal handler for agent events - shared by subscribe and reconnect */
 	private _handleAgentEvent = (event: AgentEvent): void => {
@@ -879,12 +885,20 @@ export class AgentSession {
 		return Array.from(unique);
 	}
 
-	private _findSkillByName(skillName: string) {
-		return this.resourceLoader.getSkills().skills.find((skill) => skill.name === skillName);
+	private _findSkillByName(skillName: string, options?: { allowHidden?: boolean }) {
+		const allowHidden = options?.allowHidden ?? false;
+		return this.resourceLoader
+			.getSkills()
+			.skills.find((skill) => skill.name === skillName && (allowHidden || !skill.disableModelInvocation));
 	}
 
 	private _formatMissingSkillMessage(skillName: string): string {
-		const availableSkills = this.resourceLoader.getSkills().skills.map((skill) => skill.name).join(", ") || "(none)";
+		const availableSkills =
+			this.resourceLoader
+				.getSkills()
+				.skills.filter((skill) => !skill.disableModelInvocation)
+				.map((skill) => skill.name)
+				.join(", ") || "(none)";
 		return `Skill "${skillName}" not found. Available skills: ${availableSkills}`;
 	}
 
@@ -903,8 +917,8 @@ export class AgentSession {
 		return args && args.trim() ? `${skillBlock}\n\n${args.trim()}` : skillBlock;
 	}
 
-	private _expandSkillByName(skillName: string, args?: string): string {
-		const skill = this._findSkillByName(skillName);
+	private _expandSkillByName(skillName: string, args?: string, options?: { allowHidden?: boolean }): string {
+		const skill = this._findSkillByName(skillName, options);
 		if (!skill) {
 			throw new Error(this._formatMissingSkillMessage(skillName));
 		}
@@ -918,7 +932,7 @@ export class AgentSession {
 	}
 
 	private _formatSkillInvocation(skillName: string, args?: string): string {
-		return this._expandSkillByName(skillName, args);
+		return this._expandSkillByName(skillName, args, { allowHidden: true });
 	}
 
 	private _rebuildSystemPrompt(toolNames: string[]): string {
@@ -1166,7 +1180,7 @@ export class AgentSession {
 		const skillName = spaceIndex === -1 ? text.slice(7) : text.slice(7, spaceIndex);
 		const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1).trim();
 
-		if (!this._findSkillByName(skillName)) return text;
+		if (!this._findSkillByName(skillName, { allowHidden: true })) return text;
 
 		try {
 			return this._formatSkillInvocation(skillName, args);
@@ -1185,7 +1199,7 @@ export class AgentSession {
 			name: "Skill",
 			label: "Skill",
 			description:
-				"Execute a skill within the main conversation. Use this tool when users ask for a slash command or reference a skill by name. Returns the expanded skill block and appends args after it.",
+				"Execute a model-visible installed skill within the main conversation. Use this tool when users reference a visible skill by name or when the prompt exposes matching skills in <available_skills>. Hidden skills require explicit /skill:name. Returns the expanded skill block and appends args after it.",
 			parameters: skillSchema,
 			execute: async (_toolCallId, params: unknown) => {
 				const input = params as { skill: string; args?: string };
@@ -1501,6 +1515,8 @@ export class AgentSession {
 		parentSession?: string;
 		setup?: (sessionManager: SessionManager) => Promise<void>;
 	}): Promise<boolean> {
+		const sessionSwitchEpoch = ++this._pendingSessionSwitchEpoch;
+		const wasCancelled = (): boolean => this._cancelledSessionSwitchEpoch >= sessionSwitchEpoch;
 		const previousSessionFile = this.sessionFile;
 
 		// Emit session_before_switch event with reason "new" (can be cancelled)
@@ -1517,6 +1533,11 @@ export class AgentSession {
 
 		this._disconnectFromAgent();
 		await this.abort();
+		if (wasCancelled()) {
+			this._pendingBashMessages = [];
+			this._reconnectToAgent();
+			return false;
+		}
 		this.agent.reset();
 		// Update cwd to current process directory — auto-mode may have chdir'd
 		// into a worktree since the original session was created.
@@ -1527,6 +1548,7 @@ export class AgentSession {
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this._pendingNextTurnMessages = [];
+		this._pendingBashMessages = [];
 
 		this.sessionManager.appendThinkingLevelChange(this.thinkingLevel);
 
@@ -1544,11 +1566,21 @@ export class AgentSession {
 		// Run setup callback if provided (e.g., to append initial messages)
 		if (options?.setup) {
 			await options.setup(this.sessionManager);
+			if (wasCancelled()) {
+				this._pendingBashMessages = [];
+				this._reconnectToAgent();
+				return false;
+			}
 			// Sync agent state with session manager after setup
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.replaceMessages(sessionContext.messages);
 		}
 
+		if (wasCancelled()) {
+			this._pendingBashMessages = [];
+			this._reconnectToAgent();
+			return false;
+		}
 		this._reconnectToAgent();
 
 		// Emit session_switch event with reason "new" to extensions
@@ -1871,7 +1903,7 @@ export class AgentSession {
 		}
 	}
 
-	private async extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void> {
+	private async extendResourcesFromExtensions(reason: "startup" | "reload" | "resume" | "fork"): Promise<void> {
 		if (!this._extensionRunner?.hasHandlers("resources_discover")) {
 			return;
 		}
@@ -2372,24 +2404,29 @@ export class AgentSession {
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this._pendingNextTurnMessages = [];
+		this._pendingBashMessages = [];
 
 		// Set new session
 		this.sessionManager.setSessionFile(sessionPath);
 		this.agent.sessionId = this.sessionManager.getSessionId();
-
-		// Reload messages
-		const sessionContext = this.sessionManager.buildSessionContext();
-
-		// Emit session_switch event to extensions
-		if (this._extensionRunner) {
-			await this._extensionRunner.emit({
-				type: "session_switch",
-				reason: "resume",
-				previousSessionFile,
+		const previousCwd = this._cwd;
+		this._cwd = this.sessionManager.getCwd();
+		if (this._cwd !== previousCwd) {
+			this._resourceLoader.setCwd(this._cwd);
+			await this._resourceLoader.reload();
+			try {
+				process.chdir(this._cwd);
+			} catch {
+				/* best-effort */
+			}
+			this._buildRuntime({
+				activeToolNames: this.getActiveToolNames(),
+				includeAllExtensionTools: true,
 			});
 		}
 
-		// Emit session event to custom tools
+		// Reload messages
+		const sessionContext = this.sessionManager.buildSessionContext();
 
 		this.agent.replaceMessages(sessionContext.messages);
 
@@ -2422,6 +2459,17 @@ export class AgentSession {
 		}
 
 		this._reconnectToAgent();
+
+		if (this._extensionRunner) {
+			await this._extensionRunner.emit({
+				type: "session_switch",
+				reason: "resume",
+				previousSessionFile,
+			});
+			await this._extensionRunner.emit({ type: "session_start" });
+			await this.extendResourcesFromExtensions("resume");
+		}
+
 		this._emitSessionStateChanged("switch_session");
 		return true;
 	}
@@ -2487,6 +2535,8 @@ export class AgentSession {
 				type: "session_fork",
 				previousSessionFile,
 			});
+			await this._extensionRunner.emit({ type: "session_start" });
+			await this.extendResourcesFromExtensions("fork");
 		}
 
 		// Emit session event to custom tools (with reason "fork")

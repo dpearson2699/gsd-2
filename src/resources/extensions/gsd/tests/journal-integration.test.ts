@@ -144,6 +144,7 @@ function makeIC(
       ui: { notify: () => {}, setStatus: () => {} },
       model: { id: "test-model" },
       modelRegistry: { getAvailable: () => [] },
+      getSystemPrompt: () => "",
     } as any,
     pi: {
       sendMessage: () => {},
@@ -193,6 +194,19 @@ function makeSession() {
     },
     clearTimers: () => {},
   } as any;
+}
+
+async function waitForPendingResolve(
+  hasPendingResolve: () => boolean,
+  timeoutMs = 1000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!hasPendingResolve()) {
+    if (Date.now() > deadline) {
+      throw new Error("Timed out waiting for pending agent_end resolver");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -276,7 +290,8 @@ test("runUnitPhase emits unit-start and unit-end with causedBy reference", async
   // Instead, we test that unit-start is emitted at the right point by examining
   // the event immediately after calling runUnitPhase with a session where
   // newSession resolves quickly, and we resolve the agent_end externally.
-  const { resolveAgentEnd, _resetPendingResolve } = await import("../auto-loop.js");
+  const { resolveAgentEnd } = await import("../auto-loop.js");
+  const { _hasPendingResolve, _resetPendingResolve } = await import("../auto/resolve.js");
   _resetPendingResolve();
 
   const deps = makeMockDeps(capture);
@@ -299,8 +314,7 @@ test("runUnitPhase emits unit-start and unit-end with causedBy reference", async
   // Start runUnitPhase (it will block on runUnit internally)
   const unitPromise = runUnitPhase(ic, iterData, loopState);
 
-  // Give it time to reach the await inside runUnit
-  await new Promise(r => setTimeout(r, 50));
+  await waitForPendingResolve(_hasPendingResolve);
 
   // Resolve the agent_end
   resolveAgentEnd({ messages: [{ role: "assistant" }] });
@@ -331,7 +345,8 @@ test("runUnitPhase emits unit-start and unit-end with causedBy reference", async
 
 test("all events from a mock iteration have monotonically increasing seq and same flowId", async () => {
   const capture = createEventCapture();
-  const { resolveAgentEnd, _resetPendingResolve } = await import("../auto-loop.js");
+  const { resolveAgentEnd } = await import("../auto-loop.js");
+  const { _hasPendingResolve, _resetPendingResolve } = await import("../auto/resolve.js");
   _resetPendingResolve();
 
   const deps = makeMockDeps(capture, {
@@ -358,7 +373,7 @@ test("all events from a mock iteration have monotonically increasing seq and sam
   // Phase 2: Unit execution
   const iterData = (dispatchResult as { action: "next"; data: IterationData }).data;
   const unitPromise = runUnitPhase(ic, iterData, loopState);
-  await new Promise(r => setTimeout(r, 50));
+  await waitForPendingResolve(_hasPendingResolve);
   resolveAgentEnd({ messages: [{ role: "assistant" }] });
   await unitPromise;
 
@@ -376,6 +391,135 @@ test("all events from a mock iteration have monotonically increasing seq and sam
       `seq must be monotonically increasing: event[${i - 1}].seq=${capture.events[i - 1].seq} (${capture.events[i - 1].eventType}) should be less than event[${i}].seq=${capture.events[i].seq} (${capture.events[i].eventType})`,
     );
   }
+});
+
+test("runUnitPhase emits unit-end with cancelled status when session creation fails", async () => {
+  const capture = createEventCapture();
+  let clearedRuntimeRecord = false;
+  let updatedSessionLock = false;
+  const deps = makeMockDeps(capture);
+  deps.clearUnitRuntimeRecord = () => {
+    clearedRuntimeRecord = true;
+  };
+  deps.updateSessionLock = () => {
+    updatedSessionLock = true;
+  };
+  const ic = makeIC(deps);
+  (ic.s as any).cmdCtx.newSession = () => Promise.resolve({ cancelled: true });
+
+  const iterData: IterationData = {
+    unitType: "execute-task",
+    unitId: "M001/S01/T01",
+    prompt: "do stuff",
+    finalPrompt: "do stuff",
+    pauseAfterUatDispatch: false,
+    observabilityIssues: [],
+    state: { phase: "executing", activeMilestone: { id: "M001" }, activeSlice: { id: "S01" }, registry: [], blockers: [] } as any,
+    mid: "M001",
+    midTitle: "Test",
+    isRetry: false,
+    previousTier: undefined,
+  };
+  const loopState: LoopState = { recentUnits: [{ key: "execute-task/M001/S01/T01" }], stuckRecoveryAttempts: 0 };
+
+  const result = await runUnitPhase(ic, iterData, loopState);
+  assert.equal(result.action, "break");
+  assert.equal(result.reason, "session-failed");
+
+  const startEvents = capture.events.filter(e => e.eventType === "unit-start");
+  const endEvents = capture.events.filter(e => e.eventType === "unit-end");
+  assert.equal(startEvents.length, 1, "should emit exactly one unit-start");
+  assert.equal(endEvents.length, 1, "should emit exactly one unit-end for cancelled unit");
+  assert.equal((endEvents[0].data as any).status, "cancelled");
+  assert.equal((endEvents[0].data as any).artifactVerified, false);
+  assert.equal(endEvents[0].causedBy?.seq, startEvents[0].seq);
+  assert.equal(clearedRuntimeRecord, true, "cancelled path should clear the stale runtime record");
+  assert.equal(updatedSessionLock, false, "cancelled path should not attach a session file to the session lock");
+});
+
+test("runUnitPhase emits unit-end with error status when setup fails after unit-start", async () => {
+  const capture = createEventCapture();
+  const deps = makeMockDeps(capture, {
+    selectAndApplyModel: async () => {
+      throw new Error("model selection failed");
+    },
+  });
+  const ic = makeIC(deps);
+
+  const iterData: IterationData = {
+    unitType: "execute-task",
+    unitId: "M001/S01/T01",
+    prompt: "do stuff",
+    finalPrompt: "do stuff",
+    pauseAfterUatDispatch: false,
+    observabilityIssues: [],
+    state: { phase: "executing", activeMilestone: { id: "M001" }, activeSlice: { id: "S01" }, registry: [], blockers: [] } as any,
+    mid: "M001",
+    midTitle: "Test",
+    isRetry: false,
+    previousTier: undefined,
+  };
+  const loopState: LoopState = { recentUnits: [{ key: "execute-task/M001/S01/T01" }], stuckRecoveryAttempts: 0 };
+
+  await assert.rejects(() => runUnitPhase(ic, iterData, loopState), /model selection failed/);
+
+  const startEvents = capture.events.filter(e => e.eventType === "unit-start");
+  const endEvents = capture.events.filter(e => e.eventType === "unit-end");
+  assert.equal(startEvents.length, 1, "should emit exactly one unit-start");
+  assert.equal(endEvents.length, 1, "should emit exactly one unit-end for setup failure");
+  assert.equal((endEvents[0].data as any).status, "error");
+  assert.equal((endEvents[0].data as any).artifactVerified, false);
+  assert.equal(endEvents[0].causedBy?.seq, startEvents[0].seq);
+});
+
+test("runUnitPhase emits unit-end when zero-tool-call guard triggers a retry", async () => {
+  const capture = createEventCapture();
+  const deps = makeMockDeps(capture);
+  const ic = makeIC(deps);
+  deps.getLedger = () => ({
+    units: [
+      {
+        type: "execute-task",
+        id: "M001/S01/T01",
+        startedAt: ic.s.currentUnit?.startedAt ?? 0,
+        toolCalls: 0,
+      },
+    ],
+  });
+
+  const { resolveAgentEnd } = await import("../auto-loop.js");
+  const { _hasPendingResolve, _resetPendingResolve } = await import("../auto/resolve.js");
+  _resetPendingResolve();
+
+  const iterData: IterationData = {
+    unitType: "execute-task",
+    unitId: "M001/S01/T01",
+    prompt: "do stuff",
+    finalPrompt: "do stuff",
+    pauseAfterUatDispatch: false,
+    observabilityIssues: [],
+    state: { phase: "executing", activeMilestone: { id: "M001" }, activeSlice: { id: "S01" }, registry: [], blockers: [] } as any,
+    mid: "M001",
+    midTitle: "Test",
+    isRetry: false,
+    previousTier: undefined,
+  };
+  const loopState: LoopState = { recentUnits: [{ key: "execute-task/M001/S01/T01" }], stuckRecoveryAttempts: 0 };
+
+  const unitPromise = runUnitPhase(ic, iterData, loopState);
+  await waitForPendingResolve(_hasPendingResolve);
+  resolveAgentEnd({ messages: [{ role: "assistant" }] });
+
+  const result = await unitPromise;
+  assert.equal(result.action, "continue");
+
+  const startEvents = capture.events.filter(e => e.eventType === "unit-start");
+  const endEvents = capture.events.filter(e => e.eventType === "unit-end");
+  assert.equal(startEvents.length, 1, "should emit exactly one unit-start");
+  assert.equal(endEvents.length, 1, "should emit exactly one unit-end for zero-tool retry path");
+  assert.equal((endEvents[0].data as any).status, "completed");
+  assert.equal((endEvents[0].data as any).artifactVerified, false);
+  assert.equal(endEvents[0].causedBy?.seq, startEvents[0].seq);
 });
 
 test("dispatch-match events include matchedRule field matching the rule name", async () => {
@@ -433,6 +577,67 @@ test("pre-dispatch-hook event is emitted when hooks fire", async () => {
   assert.deepEqual((hookEvents[0].data as any).firedHooks, ["observability-check", "lint-gate"]);
   assert.equal((hookEvents[0].data as any).action, "proceed");
   assert.equal(hookEvents[0].flowId, ic.flowId);
+});
+
+test("dispatch-match reflects post-hook unit type after replace", async () => {
+  const capture = createEventCapture();
+  const deps = makeMockDeps(capture, {
+    resolveDispatch: async () => ({
+      action: "dispatch" as const,
+      unitType: "execute-task",
+      unitId: "M001/S01/T01",
+      prompt: "test",
+      matchedRule: "some-rule",
+    }),
+    runPreDispatchHooks: () => ({
+      firedHooks: ["replace-hook"],
+      action: "replace",
+      unitType: "hook/custom",
+      prompt: "hook prompt",
+    }),
+  });
+  const ic = makeIC(deps);
+  const preData: PreDispatchData = {
+    state: { phase: "executing", activeMilestone: { id: "M001", title: "T", status: "active" }, activeSlice: { id: "S01" }, activeTask: { id: "T01" }, registry: [{ id: "M001", status: "active" }], blockers: [] } as any,
+    mid: "M001",
+    midTitle: "Test",
+  };
+
+  const result = await runDispatch(ic, preData, { recentUnits: [], stuckRecoveryAttempts: 0 });
+  assert.equal(result.action, "next");
+
+  const matchEvents = capture.events.filter(e => e.eventType === "dispatch-match");
+  assert.equal(matchEvents.length, 1, "should emit one dispatch-match event");
+  assert.equal((matchEvents[0].data as any).unitType, "hook/custom");
+});
+
+test("dispatch-match is not emitted when pre-dispatch hooks skip the unit", async () => {
+  const capture = createEventCapture();
+  const deps = makeMockDeps(capture, {
+    resolveDispatch: async () => ({
+      action: "dispatch" as const,
+      unitType: "execute-task",
+      unitId: "M001/S01/T01",
+      prompt: "test",
+      matchedRule: "some-rule",
+    }),
+    runPreDispatchHooks: () => ({
+      firedHooks: ["skip-hook"],
+      action: "skip",
+    }),
+  });
+  const ic = makeIC(deps);
+  const preData: PreDispatchData = {
+    state: { phase: "executing", activeMilestone: { id: "M001", title: "T", status: "active" }, activeSlice: { id: "S01" }, activeTask: { id: "T01" }, registry: [{ id: "M001", status: "active" }], blockers: [] } as any,
+    mid: "M001",
+    midTitle: "Test",
+  };
+
+  const result = await runDispatch(ic, preData, { recentUnits: [], stuckRecoveryAttempts: 0 });
+  assert.equal(result.action, "continue");
+
+  const matchEvents = capture.events.filter(e => e.eventType === "dispatch-match");
+  assert.equal(matchEvents.length, 0, "skip hooks should prevent dispatch-match journaling");
 });
 
 test("terminal event is emitted on milestone-complete", async () => {

@@ -1,3 +1,5 @@
+import { scheduleAutoResumeTimer } from "./auto-resume-timers.js";
+
 export type ProviderErrorPauseUI = {
   notify(message: string, level?: "info" | "warning" | "error" | "success"): void;
 };
@@ -17,7 +19,7 @@ export function classifyProviderError(errorMsg: string): {
   suggestedDelayMs: number;
 } {
   const isRateLimit = /rate.?limit|too many requests|429/i.test(errorMsg);
-  const isServerError = /internal server error|500|502|503|overloaded|server_error|api_error|service.?unavailable/i.test(errorMsg);
+  const isServerError = /internal server error|500|502|503|504|gateway timeout|overloaded|server_error|api_error|service.?unavailable/i.test(errorMsg);
 
   // Permanent errors — never auto-resume
   const isPermanent = /auth|unauthorized|forbidden|invalid.*key|invalid.*api|billing|quota exceeded|account/i.test(errorMsg);
@@ -74,13 +76,13 @@ export async function pauseAutoForProviderError(
     await pause();
 
     // Schedule auto-resume after the delay
-    setTimeout(() => {
+    scheduleAutoResumeTimer(options!.retryAfterMs!, () => {
       const resumeMsg = options!.isRateLimit
         ? "Rate limit window elapsed. Resuming auto-mode."
         : "Server error recovery delay elapsed. Resuming auto-mode.";
       ui.notify(resumeMsg, "info");
       options!.resume!();
-    }, options!.retryAfterMs!);
+    });
   } else {
     ui.notify(`Auto-mode paused due to provider error${errorDetail}`, "warning");
     await pause();

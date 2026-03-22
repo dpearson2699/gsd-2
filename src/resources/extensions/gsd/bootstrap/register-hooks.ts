@@ -1,7 +1,7 @@
 import { join } from "node:path";
 
 import type { ExtensionAPI, ExtensionContext } from "@gsd/pi-coding-agent";
-import { isToolCallEventType } from "@gsd/pi-coding-agent";
+import { isToolCallEventType, loadSkillsFromDir } from "@gsd/pi-coding-agent";
 
 import { buildMilestoneFileName, resolveMilestonePath, resolveSliceFile, resolveSlicePath } from "../paths.js";
 import { buildBeforeAgentStartResult } from "./system-context.js";
@@ -13,6 +13,7 @@ import { loadFile, saveFile, formatContinue } from "../files.js";
 import { deriveState } from "../state.js";
 import { getAutoDashboardData, isAutoActive, isAutoPaused, markToolEnd, markToolStart } from "../auto.js";
 import { isParallelActive, shutdownParallel } from "../parallel-orchestrator.js";
+import { recordSkillRead } from "../skill-telemetry.js";
 import { checkToolCallLoop, resetToolCallLoopGuard } from "./tool-call-loop-guard.js";
 import { saveActivityLog } from "../activity-log.js";
 
@@ -62,6 +63,9 @@ export function registerHooks(pi: ExtensionAPI): void {
   pi.on("agent_end", async (event, ctx: ExtensionContext) => {
     resetToolCallLoopGuard();
     await handleAgentEnd(pi, event, ctx);
+    if (isQueuePhaseActive()) {
+      clearDiscussionFlowState();
+    }
   });
 
   pi.on("session_before_compact", async () => {
@@ -134,6 +138,24 @@ export function registerHooks(pi: ExtensionAPI): void {
   });
 
   pi.on("tool_result", async (event) => {
+    if (event.toolName === "Skill") {
+      const skillName = typeof (event.input as any)?.skill === "string" ? (event.input as any).skill : undefined;
+      if (skillName) {
+        recordSkillRead(skillName);
+      }
+    }
+
+    if (event.toolName === "read") {
+      const path = typeof (event.input as any)?.path === "string" ? (event.input as any).path : undefined;
+      if (path && /(?:^|\/)SKILL\.md$/i.test(path)) {
+        const result = loadSkillsFromDir({ dir: join(path, ".."), source: "path" });
+        const skill = result.skills[0];
+        if (skill) {
+          recordSkillRead(skill.name);
+        }
+      }
+    }
+
     if (event.toolName !== "ask_user_questions") return;
     const milestoneId = getDiscussionMilestoneId();
     const queueActive = isQueuePhaseActive();

@@ -9,13 +9,13 @@ import {
   runUnit,
   autoLoop,
   detectStuck,
-  _resetPendingResolve,
-  _setActiveSession,
   isSessionSwitchInFlight,
   type UnitResult,
   type AgentEndEvent,
   type LoopDeps,
 } from "../auto-loop.js";
+import { _beginSessionSwitch, _endSessionSwitch, _resetPendingResolve } from "../auto/resolve.js";
+import { NEW_SESSION_TIMEOUT_MS } from "../auto/session.js";
 import type { SessionLockStatus } from "../session-lock.js";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -69,8 +69,10 @@ function makeMockSession(opts?: {
  */
 function makeMockCtx() {
   return {
-    ui: { notify: () => {} },
+    ui: { notify: () => {}, setStatus: () => {} },
     model: { id: "test-model" },
+    modelRegistry: { getAvailable: () => [] },
+    getSystemPrompt: () => "",
   } as any;
 }
 
@@ -175,14 +177,35 @@ test("runUnit returns cancelled when session creation times out", async () => {
 
   const ctx = makeMockCtx();
   const pi = makeMockPi();
-  // Session returns cancelled: true (simulates the timeout race outcome)
-  const s = makeMockSession({ newSessionResult: { cancelled: true } });
+  const s = makeMockSession();
+  let cancelledSessionSwitch = false;
+  s.cmdCtx.cancelPendingNewSession = () => {
+    cancelledSessionSwitch = true;
+  };
+  s.cmdCtx.newSession = () => new Promise<{ cancelled: boolean }>(() => {});
+  const originalSetTimeout = globalThis.setTimeout;
+  (globalThis as typeof globalThis & { setTimeout: typeof setTimeout }).setTimeout =
+    ((callback: Parameters<typeof setTimeout>[0], delay?: number, ...args: unknown[]) =>
+      originalSetTimeout(
+        callback as (...cbArgs: unknown[]) => void,
+        delay === NEW_SESSION_TIMEOUT_MS ? 0 : delay,
+        ...(args as []),
+      )) as typeof setTimeout;
 
-  const result = await runUnit(ctx, pi, s, "task", "T01", "prompt");
+  let result;
+  try {
+    result = await runUnit(ctx, pi, s, "task", "T01", "prompt");
+  } finally {
+    (globalThis as typeof globalThis & { setTimeout: typeof setTimeout }).setTimeout = originalSetTimeout;
+  }
 
   assert.equal(result.status, "cancelled");
   assert.equal(result.event, undefined);
   assert.equal(pi.calls.length, 0);
+  assert.equal(cancelledSessionSwitch, true, "timeout should best-effort cancel the pending session switch");
+  assert.equal(isSessionSwitchInFlight(), true, "hung session should keep the switch guard active until explicit reset or a newer switch");
+
+  _resetPendingResolve();
 });
 
 test("runUnit returns cancelled when s.active is false before sendMessage", async () => {
@@ -225,6 +248,19 @@ test("runUnit only arms resolve after newSession completes", async () => {
   const result = await resultPromise;
   assert.equal(result.status, "completed");
   assert.equal(pi.calls.length, 1);
+});
+
+test("stale session switch completion does not clear a newer switch", () => {
+  _resetPendingResolve();
+
+  const firstToken = _beginSessionSwitch();
+  const secondToken = _beginSessionSwitch();
+
+  _endSessionSwitch(firstToken);
+  assert.equal(isSessionSwitchInFlight(), true, "stale completion must not clear the newer session switch");
+
+  _endSessionSwitch(secondToken);
+  assert.equal(isSessionSwitchInFlight(), false, "current session switch should clear when its own token settles");
 });
 
 // ─── Structural assertions ───────────────────────────────────────────────────

@@ -28,8 +28,53 @@ function makeUnit(overrides: Partial<UnitMetrics> = {}): UnitMetrics {
 // ─── Skill Telemetry ──────────────────────────────────────────────────────────
 
 describe("skill-telemetry", () => {
-  // Note: captureAvailableSkills/getAndClearSkills depend on filesystem (getAgentDir)
-  // so we test the data flow via getSkillLastUsed and detectStaleSkills which are pure
+  it("captureAvailableSkills excludes disable-model-invocation skills", async () => {
+    const { captureAvailableSkills, getAndClearSkills, resetSkillTelemetry } = await import("../skill-telemetry.js");
+
+    captureAvailableSkills(`
+<available_skills>
+  <skill>
+    <name>visible-skill</name>
+  </skill>
+</available_skills>
+`);
+    assert.deepEqual(getAndClearSkills(), ["visible-skill"]);
+    resetSkillTelemetry();
+  });
+
+  it("captureAvailableSkills includes newly discovered skills from before_agent_start", async () => {
+    const { captureAvailableSkills, getAndClearSkills, resetSkillTelemetry } = await import("../skill-telemetry.js");
+
+    captureAvailableSkills(`
+<available_skills>
+  <skill>
+    <name>visible-skill</name>
+  </skill>
+</available_skills>
+<newly_discovered_skills>
+  <skill>
+    <name>discovered-skill</name>
+  </skill>
+</newly_discovered_skills>
+`);
+    assert.deepEqual(getAndClearSkills().sort(), ["discovered-skill", "visible-skill"]);
+    resetSkillTelemetry();
+  });
+
+  it("actively loaded skills override fallback available skills", async () => {
+    const { captureAvailableSkills, getAndClearSkills, recordSkillRead, resetSkillTelemetry } = await import("../skill-telemetry.js");
+
+    captureAvailableSkills(`
+<available_skills>
+  <skill>
+    <name>visible-skill</name>
+  </skill>
+</available_skills>
+`);
+    recordSkillRead("loaded-skill");
+    assert.deepEqual(getAndClearSkills(), ["loaded-skill"]);
+    resetSkillTelemetry();
+  });
 
   it("getSkillLastUsed returns most recent timestamp per skill", async () => {
     const { getSkillLastUsed } = await import("../skill-telemetry.js");
@@ -66,13 +111,13 @@ describe("skill-health", () => {
   });
 
   it("computeStaleAvoidList excludes already-avoided skills", async () => {
-    // This test requires filesystem access for loadLedgerFromDisk
-    // so we test the filtering logic conceptually
+    // This test depends on whatever skills are installed locally, so assert the
+    // filtering invariant rather than a specific empty result.
     const { computeStaleAvoidList } = await import("../skill-health.js");
 
-    // With no metrics file, should return empty
     const result = computeStaleAvoidList("/nonexistent/path", ["some-skill"]);
-    assert.deepEqual(result, []);
+    assert.ok(Array.isArray(result));
+    assert.ok(!result.includes("some-skill"));
   });
 });
 

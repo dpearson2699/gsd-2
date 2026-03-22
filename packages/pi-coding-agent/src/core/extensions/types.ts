@@ -297,6 +297,12 @@ export interface ExtensionCommandContext extends ExtensionContext {
 	/** Wait for the agent to finish streaming */
 	waitForIdle(): Promise<void>;
 
+	/** Best-effort cancellation for an in-flight newSession transition. */
+	cancelPendingNewSession?(): void;
+
+	/** Clear queued steering/follow-up messages from the current session. */
+	clearQueue?(): { steering: string[]; followUp: string[] };
+
 	/** Start a new session, optionally with initialization. */
 	newSession(options?: {
 		parentSession?: string;
@@ -376,7 +382,7 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 export interface ResourcesDiscoverEvent {
 	type: "resources_discover";
 	cwd: string;
-	reason: "startup" | "reload";
+	reason: "startup" | "reload" | "resume" | "fork";
 }
 
 /** Result from resources_discover event handler */
@@ -1353,6 +1359,8 @@ export interface ExtensionContextActions {
  */
 export interface ExtensionCommandContextActions {
 	waitForIdle: () => Promise<void>;
+	cancelPendingNewSession?: () => void;
+	clearQueue?: () => { steering: string[]; followUp: string[] };
 	newSession: (options?: {
 		parentSession?: string;
 		setup?: (sessionManager: SessionManager) => Promise<void>;

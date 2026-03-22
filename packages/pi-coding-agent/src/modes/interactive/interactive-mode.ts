@@ -1101,6 +1101,8 @@ export class InteractiveMode {
 				uiContext,
 				commandContextActions: {
 					waitForIdle: () => this.session.agent.waitForIdle(),
+					cancelPendingNewSession: () => this.session.cancelPendingNewSession(),
+					clearQueue: () => this.session.clearQueue(),
 					newSession: async (options) => {
 						if (this.loadingAnimation) {
 							this.loadingAnimation.stop();
@@ -1115,9 +1117,11 @@ export class InteractiveMode {
 						}
 
 						// Clear UI state
+						this.resetExtensionUI();
 						this.chatContainer.clear();
 						this.pendingMessagesContainer.clear();
 						this.compactionQueuedMessages = [];
+						this.pendingBashComponents = [];
 						this.streamingComponent = undefined;
 						this.streamingMessage = undefined;
 						this.pendingTools.clear();
@@ -1134,6 +1138,7 @@ export class InteractiveMode {
 							return { cancelled: true };
 						}
 
+						this.resetExtensionUI();
 						this.chatContainer.clear();
 						this.renderInitialMessages();
 						this.editor.setText(result.selectedText);
@@ -1152,6 +1157,7 @@ export class InteractiveMode {
 							return { cancelled: true };
 						}
 
+						this.resetExtensionUI();
 						this.chatContainer.clear();
 						this.renderInitialMessages();
 						if (result.editorText && !this.editor.getText().trim()) {
@@ -1162,8 +1168,8 @@ export class InteractiveMode {
 						return { cancelled: false };
 					},
 					switchSession: async (sessionPath) => {
-						await this.handleResumeSession(sessionPath);
-						return { cancelled: false };
+						const resumed = await this.handleResumeSession(sessionPath);
+						return { cancelled: !resumed };
 					},
 					reload: async () => {
 						await this.handleReloadCommand();
@@ -3252,7 +3258,7 @@ export class InteractiveMode {
 		});
 	}
 
-	private async handleResumeSession(sessionPath: string): Promise<void> {
+	private async handleResumeSession(sessionPath: string): Promise<boolean> {
 		// Stop loading animation
 		if (this.loadingAnimation) {
 			this.loadingAnimation.stop();
@@ -3260,25 +3266,42 @@ export class InteractiveMode {
 		}
 		this.statusContainer.clear();
 
-		// Clear UI state
+		// Switch session via AgentSession (emits extension session events)
+		const switched = await this.session.switchSession(sessionPath);
+		if (!switched) {
+			return false;
+		}
+
+		// Clear UI state only after the switch succeeds
+		this.resetExtensionUI();
 		this.pendingMessagesContainer.clear();
 		this.compactionQueuedMessages = [];
+		this.pendingBashComponents = [];
 		this.streamingComponent = undefined;
 		this.streamingMessage = undefined;
 		this.pendingTools.clear();
 
-		// Switch session via AgentSession (emits extension session events)
-		await this.session.switchSession(sessionPath);
-
 		// Clear and re-render the chat
 		this.chatContainer.clear();
 		this.renderInitialMessages();
+		this.setupAutocomplete();
+		const runner = this.session.extensionRunner;
+		if (runner) {
+			this.setupExtensionShortcuts(runner);
+		}
+		this.showLoadedResources({
+			extensionPaths: runner?.getExtensionPaths() ?? [],
+			force: false,
+			showDiagnosticsWhenQuiet: true,
+		});
 
 		if (this.session.sessionManager.wasInterrupted()) {
 			this.showStatus("Resumed session (previous session ended unexpectedly — last action may be incomplete)");
 		} else {
 			this.showStatus("Resumed session");
 		}
+
+		return true;
 	}
 
 	private showProviderManager(): void {

@@ -514,8 +514,6 @@ export async function runDispatch(
     return { action: "continue" };
   }
 
-  deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: ic.nextSeq(), eventType: "dispatch-match", rule: dispatchResult.matchedRule, data: { unitType: dispatchResult.unitType, unitId: dispatchResult.unitId } });
-
   let unitType = dispatchResult.unitType;
   let unitId = dispatchResult.unitId;
   let prompt = dispatchResult.prompt;
@@ -624,6 +622,8 @@ export async function runDispatch(
   } else if (preDispatchResult.prompt) {
     prompt = preDispatchResult.prompt;
   }
+
+  deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: ic.nextSeq(), eventType: "dispatch-match", rule: dispatchResult.matchedRule, data: { unitType, unitId } });
 
   const priorSliceBlocker = deps.getPriorSliceCompletionBlocker(
     s.basePath,
@@ -856,7 +856,13 @@ export async function runUnitPhase(
   s.currentUnit = { type: unitType, id: unitId, startedAt: Date.now() };
   const unitStartSeq = ic.nextSeq();
   deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: unitStartSeq, eventType: "unit-start", data: { unitType, unitId } });
-  deps.captureAvailableSkills();
+  let unitEndEmitted = false;
+  const emitUnitEnd = (status: "completed" | "cancelled" | "error", artifactVerified: boolean): void => {
+    if (unitEndEmitted) return;
+    unitEndEmitted = true;
+    deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: ic.nextSeq(), eventType: "unit-end", data: { unitType, unitId, status, artifactVerified }, causedBy: { flowId: ic.flowId, seq: unitStartSeq } });
+  };
+  deps.captureAvailableSkills(ctx.getSystemPrompt());
   deps.writeUnitRuntimeRecord(
     s.basePath,
     unitType,
@@ -871,6 +877,8 @@ export async function runUnitPhase(
       lastProgressKind: "dispatch",
     },
   );
+
+  try {
 
   // Status bar + progress widget
   ctx.ui.setStatus("gsd-auto", "auto");
@@ -1041,23 +1049,6 @@ export async function runUnitPhase(
     status: unitResult.status,
   });
 
-  // Now that runUnit has called newSession(), the session file path is correct.
-  const sessionFile = deps.getSessionFile(ctx);
-  deps.updateSessionLock(
-    deps.lockBase(),
-    unitType,
-    unitId,
-    s.completedUnits.length,
-    sessionFile,
-  );
-  deps.writeLock(
-    deps.lockBase(),
-    unitType,
-    unitId,
-    s.completedUnits.length,
-    sessionFile,
-  );
-
   // Tag the most recent window entry with error info for stuck detection
   if (unitResult.status === "error" || unitResult.status === "cancelled") {
     const lastEntry = loopState.recentUnits[loopState.recentUnits.length - 1];
@@ -1076,14 +1067,38 @@ export async function runUnitPhase(
   }
 
   if (unitResult.status === "cancelled") {
+    deps.clearUnitTimeout();
+    deps.clearUnitRuntimeRecord(s.basePath, unitType, unitId);
+    emitUnitEnd(unitResult.status, false);
+    if (unitResult.cancelReason === "paused") {
+      debugLog("autoLoop", { phase: "exit", reason: "paused" });
+      return { action: "break", reason: "paused" };
+    }
     ctx.ui.notify(
-      `Session creation timed out or was cancelled for ${unitType} ${unitId}. Will retry.`,
+      `Session creation timed out or was cancelled for ${unitType} ${unitId}. Auto-mode stopped to avoid a stale session switch. Resume manually once the session is healthy.`,
       "warning",
     );
     await deps.stopAuto(ctx, pi, "Session creation failed");
     debugLog("autoLoop", { phase: "exit", reason: "session-failed" });
     return { action: "break", reason: "session-failed" };
   }
+
+  // Now that runUnit has called newSession(), the session file path is correct.
+  const sessionFile = deps.getSessionFile(ctx);
+  deps.updateSessionLock(
+    deps.lockBase(),
+    unitType,
+    unitId,
+    s.completedUnits.length,
+    sessionFile,
+  );
+  deps.writeLock(
+    deps.lockBase(),
+    unitType,
+    unitId,
+    s.completedUnits.length,
+    sessionFile,
+  );
 
   // ── Immediate unit closeout (metrics, activity log, memory) ────────
   // Run right after runUnit() returns so telemetry is never lost to a
@@ -1118,9 +1133,11 @@ export async function runUnitPhase(
           `${unitType} ${unitId} completed with 0 tool calls — hallucinated summary, will retry`,
           "warning",
         );
+        deps.clearUnitTimeout();
+        emitUnitEnd(unitResult.status, false);
         // Do NOT add to completedUnits — fall through to next iteration
         // where dispatch will re-derive and re-dispatch this task.
-        return { action: "next", data: { unitStartedAt: s.currentUnit.startedAt } };
+        return { action: "continue" };
       }
     }
   }
@@ -1159,9 +1176,14 @@ export async function runUnitPhase(
     s.unitRecoveryCount.delete(`${unitType}/${unitId}`);
   }
 
-  deps.emitJournalEvent({ ts: new Date().toISOString(), flowId: ic.flowId, seq: ic.nextSeq(), eventType: "unit-end", data: { unitType, unitId, status: unitResult.status, artifactVerified }, causedBy: { flowId: ic.flowId, seq: unitStartSeq } });
+  emitUnitEnd(unitResult.status, artifactVerified);
 
   return { action: "next", data: { unitStartedAt: s.currentUnit.startedAt } };
+  } catch (err) {
+    deps.clearUnitTimeout();
+    emitUnitEnd("error", false);
+    throw err;
+  }
 }
 
 // ─── runFinalize ──────────────────────────────────────────────────────────────

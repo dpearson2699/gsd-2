@@ -9,7 +9,6 @@
  */
 
 import type { UnitResult, AgentEndEvent } from "./types.js";
-import type { AutoSession } from "./session.js";
 import { debugLog } from "../debug-logger.js";
 
 // ─── Per-unit one-shot promise state ────────────────────────────────────────
@@ -20,7 +19,8 @@ import { debugLog } from "../debug-logger.js";
 // scoped pendingResolve + pendingAgentEndQueue pattern.
 
 let _currentResolve: ((result: UnitResult) => void) | null = null;
-let _sessionSwitchInFlight = false;
+let _sessionSwitchInFlightToken: number | null = null;
+let _nextSessionSwitchToken = 1;
 
 // ─── Setters (needed for cross-module mutation) ─────────────────────────────
 
@@ -28,8 +28,16 @@ export function _setCurrentResolve(fn: ((result: UnitResult) => void) | null): v
   _currentResolve = fn;
 }
 
-export function _setSessionSwitchInFlight(v: boolean): void {
-  _sessionSwitchInFlight = v;
+export function _beginSessionSwitch(): number {
+  const token = _nextSessionSwitchToken++;
+  _sessionSwitchInFlightToken = token;
+  return token;
+}
+
+export function _endSessionSwitch(token: number): void {
+  if (_sessionSwitchInFlightToken === token) {
+    _sessionSwitchInFlightToken = null;
+  }
 }
 
 export function _clearCurrentResolve(): void {
@@ -47,7 +55,7 @@ export function _clearCurrentResolve(): void {
  * session switch), the event is dropped with a debug warning.
  */
 export function resolveAgentEnd(event: AgentEndEvent): void {
-  if (_sessionSwitchInFlight) {
+  if (_sessionSwitchInFlightToken !== null) {
     debugLog("resolveAgentEnd", { status: "ignored-during-switch" });
     return;
   }
@@ -65,7 +73,12 @@ export function resolveAgentEnd(event: AgentEndEvent): void {
 }
 
 export function isSessionSwitchInFlight(): boolean {
-  return _sessionSwitchInFlight;
+  return _sessionSwitchInFlightToken !== null;
+}
+
+/** Test helper: whether a unit resolve callback is currently installed. */
+export function _hasPendingResolve(): boolean {
+  return _currentResolve !== null;
 }
 
 // ─── resolveAgentEndCancelled ─────────────────────────────────────────────────
@@ -77,12 +90,12 @@ export function isSessionSwitchInFlight(): boolean {
  * blocks to ensure the autoLoop is never stuck awaiting a promise that
  * will never resolve. Safe to call when no resolver is pending (no-op).
  */
-export function resolveAgentEndCancelled(): void {
+export function resolveAgentEndCancelled(reason: "paused" | "session-failed" = "session-failed"): void {
   if (_currentResolve) {
     debugLog("resolveAgentEndCancelled", { status: "resolving-cancelled" });
     const r = _currentResolve;
     _currentResolve = null;
-    r({ status: "cancelled" });
+    r({ status: "cancelled", cancelReason: reason });
   }
 }
 
@@ -94,13 +107,6 @@ export function resolveAgentEndCancelled(): void {
  */
 export function _resetPendingResolve(): void {
   _currentResolve = null;
-  _sessionSwitchInFlight = false;
-}
-
-/**
- * No-op for backward compatibility with tests that previously set the
- * active session. The module no longer holds a session reference.
- */
-export function _setActiveSession(_session: AutoSession | null): void {
-  // No-op — kept for test backward compatibility
+  _sessionSwitchInFlightToken = null;
+  _nextSessionSwitchToken = 1;
 }
