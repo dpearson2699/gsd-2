@@ -1903,7 +1903,7 @@ export class AgentSession {
 		}
 	}
 
-	private async extendResourcesFromExtensions(reason: "startup" | "reload"): Promise<void> {
+	private async extendResourcesFromExtensions(reason: "startup" | "reload" | "resume" | "fork"): Promise<void> {
 		if (!this._extensionRunner?.hasHandlers("resources_discover")) {
 			return;
 		}
@@ -2466,6 +2466,8 @@ export class AgentSession {
 				reason: "resume",
 				previousSessionFile,
 			});
+			await this._extensionRunner.emit({ type: "session_start" });
+			await this.extendResourcesFromExtensions("resume");
 		}
 
 		this._emitSessionStateChanged("switch_session");
@@ -2533,6 +2535,8 @@ export class AgentSession {
 				type: "session_fork",
 				previousSessionFile,
 			});
+			await this._extensionRunner.emit({ type: "session_start" });
+			await this.extendResourcesFromExtensions("fork");
 		}
 
 		// Emit session event to custom tools (with reason "fork")

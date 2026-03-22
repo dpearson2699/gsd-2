@@ -790,7 +790,7 @@ export async function pauseAuto(
   resetProviderRecoveryState();
   clearUnitTimeout();
   // Unblock any pending unit promise so the auto-loop is not orphaned.
-  resolveAgentEndCancelled();
+  resolveAgentEndCancelled("paused");
 
   s.pausedSessionFile = ctx?.sessionManager?.getSessionFile() ?? null;
 

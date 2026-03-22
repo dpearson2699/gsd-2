@@ -3275,6 +3275,16 @@ export class InteractiveMode {
 		// Clear and re-render the chat
 		this.chatContainer.clear();
 		this.renderInitialMessages();
+		this.setupAutocomplete();
+		const runner = this.session.extensionRunner;
+		if (runner) {
+			this.setupExtensionShortcuts(runner);
+		}
+		this.showLoadedResources({
+			extensionPaths: runner?.getExtensionPaths() ?? [],
+			force: false,
+			showDiagnosticsWhenQuiet: true,
+		});
 
 		if (this.session.sessionManager.wasInterrupted()) {
 			this.showStatus("Resumed session (previous session ended unexpectedly — last action may be incomplete)");

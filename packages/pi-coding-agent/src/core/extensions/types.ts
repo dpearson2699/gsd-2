@@ -382,7 +382,7 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 export interface ResourcesDiscoverEvent {
 	type: "resources_discover";
 	cwd: string;
-	reason: "startup" | "reload";
+	reason: "startup" | "reload" | "resume" | "fork";
 }
 
 /** Result from resources_discover event handler */

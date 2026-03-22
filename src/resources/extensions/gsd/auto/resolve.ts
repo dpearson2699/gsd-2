@@ -91,12 +91,12 @@ export function _hasPendingResolve(): boolean {
  * blocks to ensure the autoLoop is never stuck awaiting a promise that
  * will never resolve. Safe to call when no resolver is pending (no-op).
  */
-export function resolveAgentEndCancelled(): void {
+export function resolveAgentEndCancelled(reason: "paused" | "session-failed" = "session-failed"): void {
   if (_currentResolve) {
     debugLog("resolveAgentEndCancelled", { status: "resolving-cancelled" });
     const r = _currentResolve;
     _currentResolve = null;
-    r({ status: "cancelled" });
+    r({ status: "cancelled", cancelReason: reason });
   }
 }
 

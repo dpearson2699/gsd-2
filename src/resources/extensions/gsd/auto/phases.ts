@@ -1070,6 +1070,10 @@ export async function runUnitPhase(
   deps.clearUnitTimeout();
   deps.clearUnitRuntimeRecord(s.basePath, unitType, unitId);
   emitUnitEnd(unitResult.status, false);
+    if (unitResult.cancelReason === "paused") {
+      debugLog("autoLoop", { phase: "exit", reason: "paused" });
+      return { action: "break", reason: "paused" };
+    }
     ctx.ui.notify(
     `Session creation timed out or was cancelled for ${unitType} ${unitId}. Auto-mode stopped to avoid a stale session switch. Resume manually once the session is healthy.`,
       "warning",
