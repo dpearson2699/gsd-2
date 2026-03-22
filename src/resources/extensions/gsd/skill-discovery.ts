@@ -8,6 +8,12 @@
  * making them visible to all subsequent units without requiring a reload.
  */
 
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
+/** Industry-standard skills.sh global skills directory */
+const SKILLS_DIR = join(homedir(), ".agents", "skills");
 import { loadSkills } from "@gsd/pi-coding-agent";
 
 export interface DiscoveredSkill {
