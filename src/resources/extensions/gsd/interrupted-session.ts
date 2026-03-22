@@ -74,7 +74,10 @@ export async function assessInterruptedSession(
   basePath: string,
 ): Promise<InterruptedSessionAssessment> {
   const pausedSession = readPausedSessionMetadata(basePath);
-  const assessmentBasePath = pausedSession?.worktreePath || basePath;
+  const worktreeExists = pausedSession?.worktreePath
+    ? existsSync(pausedSession.worktreePath)
+    : false;
+  const assessmentBasePath = worktreeExists ? pausedSession!.worktreePath! : basePath;
   const rawLock = readCrashLock(basePath);
   const lock = rawLock && rawLock.pid !== process.pid ? rawLock : null;
 

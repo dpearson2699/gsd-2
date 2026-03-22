@@ -251,6 +251,39 @@ test("assessInterruptedSession marks stale paused-session metadata as stale when
   }
 });
 
+test("assessInterruptedSession classifies paused session without lock as recoverable when disk state is resumable", async () => {
+  const base = makeTmpBase();
+  try {
+    writeRoadmap(base, false);
+    writePausedSession(base, "M001", true);
+
+    const assessment = await assessInterruptedSession(base);
+    assert.equal(assessment.classification, "recoverable");
+    assert.equal(assessment.lock, null);
+    assert.equal(assessment.pausedSession?.milestoneId, "M001");
+    assert.equal(assessment.hasResumableDiskState, true);
+    assert.equal(assessment.isBootstrapCrash, false);
+  } finally {
+    cleanup(base);
+  }
+});
+
+test("assessInterruptedSession falls back to basePath when worktreePath no longer exists", async () => {
+  const base = makeTmpBase();
+  try {
+    writeRoadmap(base, false);
+    // Reference a worktree that doesn't exist on disk
+    writePausedSession(base, "M001", false, "/nonexistent/worktree");
+
+    const assessment = await assessInterruptedSession(base);
+    // Should use basePath (which has an unfinished roadmap) instead of the missing worktree
+    assert.equal(assessment.classification, "recoverable");
+    assert.equal(assessment.hasResumableDiskState, true);
+  } finally {
+    cleanup(base);
+  }
+});
+
 test("assessInterruptedSession prefers paused worktree state when worktreePath is recorded", async () => {
   const base = makeTmpBase();
   const worktree = join(base, "worktree-copy");

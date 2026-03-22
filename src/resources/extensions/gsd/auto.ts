@@ -1023,6 +1023,12 @@ export async function startAuto(
     s.stepMode = s.stepMode || requestedStepMode;
     s.cmdCtx = ctx;
     s.basePath = base;
+    s.autoStartTime = Date.now();
+    s.originalModelId = ctx.model?.id ?? null;
+    s.originalModelProvider = ctx.model?.provider ?? null;
+    if (ctx.model) {
+      s.autoModeStartModel = { provider: ctx.model.provider, id: ctx.model.id };
+    }
     s.unitDispatchCount.clear();
     s.unitLifetimeDispatches.clear();
     if (!getLedger()) initMetrics(base);
