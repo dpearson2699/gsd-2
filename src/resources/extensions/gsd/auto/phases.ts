@@ -1132,7 +1132,7 @@ export async function runUnitPhase(
 		emitUnitEnd(unitResult.status, false);
         // Do NOT add to completedUnits — fall through to next iteration
         // where dispatch will re-derive and re-dispatch this task.
-        return { action: "next", data: { unitStartedAt: s.currentUnit.startedAt } };
+		return { action: "continue" };
       }
     }
   }

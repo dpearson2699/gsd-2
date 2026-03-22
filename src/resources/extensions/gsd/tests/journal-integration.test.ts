@@ -509,7 +509,7 @@ test("runUnitPhase emits unit-end when zero-tool-call guard triggers a retry", a
   resolveAgentEnd({ messages: [{ role: "assistant" }] });
 
   const result = await unitPromise;
-  assert.equal(result.action, "next");
+  assert.equal(result.action, "continue");
 
   const startEvents = capture.events.filter(e => e.eventType === "unit-start");
   const endEvents = capture.events.filter(e => e.eventType === "unit-end");
