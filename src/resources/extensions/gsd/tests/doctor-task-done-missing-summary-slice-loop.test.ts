@@ -68,7 +68,7 @@ Verified.
 
     // ── First pass: diagnose ──
     const diagReport = await runGSDDoctor(base, { fix: false });
-    const taskDoneMissing = diagReport.issues.filter(i => i.code === "task_done_missing_summary");
+    const taskDoneMissing = diagReport.issues.filter(i => i.code === "db_done_task_no_summary");
     assertEq(taskDoneMissing.length, 3, "detects 3 tasks with task_done_missing_summary");
 
     // ── Second pass: fix ──
@@ -93,7 +93,7 @@ Verified.
 
     // ── Third pass: re-run doctor should NOT re-detect task_done_missing_summary ──
     const rerunReport = await runGSDDoctor(base, { fix: false });
-    const rerunTaskDone = rerunReport.issues.filter(i => i.code === "task_done_missing_summary");
+    const rerunTaskDone = rerunReport.issues.filter(i => i.code === "db_done_task_no_summary");
     assertEq(rerunTaskDone.length, 0, "no task_done_missing_summary on re-run (no infinite loop)");
 
     rmSync(base, { recursive: true, force: true });
