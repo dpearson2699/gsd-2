@@ -387,8 +387,30 @@ function initSchema(db: DbAdapter, fileBacked: boolean): void {
       )
     `);
 
+    // Slice dependency junction table (v14)
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS slice_dependencies (
+        milestone_id TEXT NOT NULL,
+        slice_id TEXT NOT NULL,
+        depends_on_slice_id TEXT NOT NULL,
+        PRIMARY KEY (milestone_id, slice_id, depends_on_slice_id),
+        FOREIGN KEY (milestone_id, slice_id) REFERENCES slices(milestone_id, id),
+        FOREIGN KEY (milestone_id, depends_on_slice_id) REFERENCES slices(milestone_id, id)
+      )
+    `);
+
     db.exec("CREATE INDEX IF NOT EXISTS idx_memories_active ON memories(superseded_by)");
     db.exec("CREATE INDEX IF NOT EXISTS idx_replan_history_milestone ON replan_history(milestone_id, created_at)");
+
+    // v13 indexes — hot-path dispatch queries
+    db.exec("CREATE INDEX IF NOT EXISTS idx_tasks_active ON tasks(milestone_id, slice_id, status)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_slices_active ON slices(milestone_id, status)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_milestones_status ON milestones(status)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_quality_gates_pending ON quality_gates(milestone_id, slice_id, status)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_verification_evidence_task ON verification_evidence(milestone_id, slice_id, task_id)");
+
+    // v14 index — slice dependency lookups
+    db.exec("CREATE INDEX IF NOT EXISTS idx_slice_deps_target ON slice_dependencies(milestone_id, depends_on_slice_id)");
 
     db.exec(`CREATE VIEW IF NOT EXISTS active_decisions AS SELECT * FROM decisions WHERE superseded_by IS NULL`);
     db.exec(`CREATE VIEW IF NOT EXISTS active_requirements AS SELECT * FROM requirements WHERE superseded_by IS NULL`);
@@ -800,8 +822,23 @@ export function vacuumDatabase(): void {
   } catch { /* non-fatal */ }
 }
 
+let _txDepth = 0;
+
 export function transaction<T>(fn: () => T): T {
   if (!currentDb) throw new GSDError(GSD_STALE_STATE, "gsd-db: No database open");
+
+  // Re-entrant: if already inside a transaction, just run fn() without
+  // starting a new one. SQLite does not support nested BEGIN/COMMIT.
+  if (_txDepth > 0) {
+    _txDepth++;
+    try {
+      return fn();
+    } finally {
+      _txDepth--;
+    }
+  }
+
+  _txDepth++;
   currentDb.exec("BEGIN");
   try {
     const result = fn();
@@ -810,6 +847,8 @@ export function transaction<T>(fn: () => T): T {
   } catch (err) {
     currentDb.exec("ROLLBACK");
     throw err;
+  } finally {
+    _txDepth--;
   }
 }
 
