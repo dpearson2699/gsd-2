@@ -82,9 +82,37 @@ export function formatProgress(event: Record<string, unknown>, verbose: boolean)
   const type = String(event.type ?? '')
 
   switch (type) {
-    case 'tool_execution_start':
-      if (verbose) return `  [tool]    ${event.toolName ?? 'unknown'}`
+    case 'tool_execution_start': {
+      const name = String(event.toolName ?? 'unknown')
+      const summary = summarizeToolArgs(name, event.args as Record<string, unknown> | undefined)
+      return summary ? `  [tool]    ${name} ${summary}` : `  [tool]    ${name}`
+    }
+
+    case 'tool_execution_end': {
+      if (verbose) {
+        const name = String(event.toolName ?? 'unknown')
+        const isError = Boolean(event.isError)
+        return isError ? `  [tool]    ${name} ✗ error` : null
+      }
+      // In non-verbose, only surface errors
+      if (event.isError) {
+        const name = String(event.toolName ?? 'unknown')
+        return `  [tool]    ${name} ✗ error`
+      }
       return null
+    }
+
+    case 'cost_update': {
+      const cumCost = event.cumulativeCost as Record<string, unknown> | undefined
+      const costUsd = Number(cumCost?.costUsd ?? 0)
+      if (costUsd > 0) {
+        const tokens = event.tokens as Record<string, number> | undefined
+        const inK = tokens ? (tokens.input / 1000).toFixed(1) : '?'
+        const outK = tokens ? (tokens.output / 1000).toFixed(1) : '?'
+        return `  [cost]    $${costUsd.toFixed(4)} (${inK}k in / ${outK}k out)`
+      }
+      return null
+    }
 
     case 'agent_start':
       return '[agent]   Session started'
@@ -94,15 +122,51 @@ export function formatProgress(event: Record<string, unknown>, verbose: boolean)
 
     case 'extension_ui_request':
       if (event.method === 'notify') {
-        return `[gsd]     ${event.message ?? ''}`
+        const msg = String(event.message ?? '')
+        return msg ? `[gsd]     ${msg}` : null
       }
-      if (event.method === 'setStatus') {
-        return `[status]  ${event.message ?? ''}`
-      }
+      // setStatus / setWidget are TUI-specific — suppress in text mode
       return null
 
     default:
       return null
+  }
+}
+
+/**
+ * Extract a short summary from tool arguments for display.
+ * Returns null if nothing useful can be summarized.
+ */
+function summarizeToolArgs(toolName: string, args: Record<string, unknown> | undefined): string | null {
+  if (!args) return null
+
+  switch (toolName) {
+    case 'Read':
+    case 'read':
+      return args.path ? String(args.path) : null
+    case 'Write':
+    case 'write':
+      return args.path ? String(args.path) : null
+    case 'Edit':
+    case 'edit':
+      return args.path ? String(args.path) : null
+    case 'Bash':
+    case 'bash': {
+      const cmd = String(args.command ?? '')
+      return cmd.length > 80 ? cmd.slice(0, 77) + '...' : cmd || null
+    }
+    case 'Grep':
+    case 'grep':
+      return args.pattern ? `/${args.pattern}/` + (args.path ? ` in ${args.path}` : '') : null
+    case 'find':
+      return args.pattern ? String(args.pattern) + (args.path ? ` in ${args.path}` : '') : null
+    case 'lsp':
+      return args.action ? String(args.action) + (args.symbol ? ` ${args.symbol}` : '') : null
+    default: {
+      // For GSD tools, show the first string arg that looks like an ID or path
+      const first = Object.values(args).find(v => typeof v === 'string' && String(v).length < 80)
+      return first ? String(first) : null
+    }
   }
 }
 
