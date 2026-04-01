@@ -739,6 +739,39 @@ describe("auto-worktree-milestone-merge", { timeout: 300_000 }, () => {
     );
   });
 
+  test("#2912: stale SQUASH_MSG and MERGE_MSG are cleaned before squash merge", () => {
+    // Verifies that the pre-merge cleanup (step 7b) removes all three merge
+    // artifacts — not just MERGE_HEAD — so that `git merge --squash` never
+    // encounters leftover state from a prior interrupted operation.
+    const repo = freshRepo();
+    const wtPath = createAutoWorktree(repo, "M294");
+
+    addSliceToMilestone(repo, wtPath, "M294", "S01", "Feature C", [
+      { file: "feature-c.ts", content: "export const c = true;\n", message: "add feature c" },
+    ]);
+
+    const roadmap = makeRoadmap("M294", "Stale merge artifacts", [
+      { id: "S01", title: "Feature C" },
+    ]);
+
+    // Plant stale merge artifacts in the git dir to simulate a prior
+    // interrupted merge.  The pre-merge cleanup must remove all of them.
+    const gitDir = join(repo, ".git");
+    writeFileSync(join(gitDir, "SQUASH_MSG"), "stale squash message\n");
+    writeFileSync(join(gitDir, "MERGE_MSG"), "stale merge message\n");
+
+    mergeMilestoneToMain(repo, "M294", roadmap);
+
+    assert.ok(
+      !existsSync(join(gitDir, "SQUASH_MSG")),
+      "#2912: stale SQUASH_MSG must be removed by pre-merge cleanup",
+    );
+    assert.ok(
+      !existsSync(join(gitDir, "MERGE_MSG")),
+      "#2912: stale MERGE_MSG must be removed by pre-merge cleanup",
+    );
+  });
+
   test("#1906: codeFilesChanged=true when real code is merged", () => {
     const repo = freshRepo();
     const wtPath = createAutoWorktree(repo, "M190");
