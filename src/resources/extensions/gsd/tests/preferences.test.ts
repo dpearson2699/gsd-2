@@ -412,6 +412,16 @@ test("unrecognized format warning is emitted at most once (#2373)", () => {
   }
 });
 
+test("parsePreferencesMarkdown parses heading+list format without frontmatter (#2036)", () => {
+  // A GSD agent recovery session wrote preferences in markdown heading+list
+  // format instead of YAML frontmatter. Since the heading+list fallback parser
+  // was added, this format is now handled gracefully.
+  const content = "## Git\n\n- isolation: none\n";
+  const result = parsePreferencesMarkdown(content);
+  assert.notEqual(result, null, "heading+list content should be parsed");
+  assert.deepStrictEqual(result!.git, { isolation: "none" });
+});
+
 // ── Experimental preferences ─────────────────────────────────────────────────
 
 test("experimental.rtk: true is accepted and stored", () => {
