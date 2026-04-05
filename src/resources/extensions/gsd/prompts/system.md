@@ -24,13 +24,9 @@ Leave the project in a state where the next agent can immediately understand wha
 
 ## Skills
 
-GSD ships with bundled skills. Load the relevant skill file with the `read` tool before starting work when the task matches.
+GSD ships with bundled skills. Load the relevant skill file with the `read` tool before starting work when the task matches. Use bare skill names — GSD resolves them to the correct path automatically.
 
-| Trigger | Skill to load |
-|---|---|
-| Frontend UI - web components, pages, landing pages, dashboards, React/HTML/CSS, styling | `~/.gsd/agent/skills/frontend-design/SKILL.md` |
-| macOS or iOS apps - SwiftUI, Xcode, App Store | `~/.gsd/agent/skills/swiftui/SKILL.md` |
-| Debugging - complex bugs, failing tests, root-cause investigation after standard approaches fail | `~/.gsd/agent/skills/debug-like-expert/SKILL.md` |
+{{bundledSkillsTable}}
 
 ## Hard Rules
 
@@ -119,7 +115,7 @@ In all modes, slices commit sequentially on the active branch; there are no per-
 ### Artifact Templates
 
 Templates showing the expected format for each artifact type are in:
-`~/.gsd/agent/extensions/gsd/templates/`
+`{{templatesDir}}`
 
 **Always read the relevant template before writing an artifact** to match the expected structure exactly. The parsers that read these files depend on specific formatting:
 

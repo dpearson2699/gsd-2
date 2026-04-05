@@ -51,6 +51,14 @@ const __extensionDir = resolveExtensionDir();
 const promptsDir = join(__extensionDir, "prompts");
 const templatesDir = join(__extensionDir, "templates");
 
+/**
+ * Return the resolved templates directory path for use in prompts.
+ * Avoids hardcoding `~/.gsd/agent/extensions/gsd/templates/` in templates. (#3575)
+ */
+export function getTemplatesDir(): string {
+  return templatesDir;
+}
+
 // Cache all templates eagerly at module load — a running session uses the
 // template versions that were on disk at startup, immune to later overwrites.
 const templateCache = new Map<string, string>();
