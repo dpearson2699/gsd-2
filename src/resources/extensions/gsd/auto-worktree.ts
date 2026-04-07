@@ -1453,8 +1453,13 @@ export function mergeMilestoneToMain(
     originalBasePath_,
     milestoneId,
   );
+  // Validate prefs.main_branch exists before using it — a stale preference
+  // (e.g. "master" when repo uses "main") causes merge failure (#3589).
+  const validatedPrefBranch = prefs.main_branch && nativeBranchExists(originalBasePath_, prefs.main_branch)
+    ? prefs.main_branch
+    : undefined;
   const mainBranch =
-    integrationBranch ?? prefs.main_branch ?? nativeDetectMainBranch(originalBasePath_);
+    integrationBranch ?? validatedPrefBranch ?? nativeDetectMainBranch(originalBasePath_);
 
   // Remove transient project-root state files before any branch or merge
   // operation. Untracked milestone metadata can otherwise block squash merges.
