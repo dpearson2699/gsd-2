@@ -174,9 +174,9 @@ export function incrementUatCount(basePath: string, mid: string, sid: string): n
  * @see https://github.com/gsd-build/gsd-2/issues/2931
  */
 export function isVerificationNotApplicable(value: string): boolean {
-  const v = (value ?? "").toLowerCase().trim();
+  const v = (value ?? "").toLowerCase().trim().replace(/[.\s]+$/, "");
   if (!v || v === "none") return true;
-  return /^(?:none[\s._-]*(?:required|needed|planned)?|n\/?a|not[\s._-]+(?:applicable|required|needed)|no[\s._-]+operational[\s\S]*)$/i.test(v);
+  return /^(?:none[\s._-]*(?:required|needed|planned)?|n\/?a|not[\s._-]+(?:applicable|required|needed|provided)|no[\s._-]+operational[\s\S]*)$/i.test(v);
 }
 
 // ─── Rules ────────────────────────────────────────────────────────────────
