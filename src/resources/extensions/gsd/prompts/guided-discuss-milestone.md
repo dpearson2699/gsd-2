@@ -92,7 +92,7 @@ Before moving to the wrap-up gate, verify you have covered:
 - header: "Depth Check"
 - question: "Did I capture the depth right?"
 - options: "Yes, you got it (Recommended)", "Not quite — let me clarify"
-- **The question ID must contain `depth_verification`** (e.g. `depth_verification_confirm`) — this enables the write-gate downstream.
+- **The question ID must contain `depth_verification` and the milestone id** (e.g. `depth_verification_{{milestoneId}}_confirm`) — this enables the write-gate downstream and keeps verification scoped to the milestone being discussed.
 
 **If `{{structuredQuestionsAvailable}}` is `false`:** ask in plain text: "Did I capture that correctly? If not, tell me what I missed." Wait for explicit confirmation before proceeding. **The same non-bypassable gate applies to the plain-text path** — if the user does not respond, gives an ambiguous answer, or does not explicitly confirm, you MUST re-ask. Never rationalize past a missing confirmation.
 

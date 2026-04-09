@@ -14,7 +14,7 @@ This is remediation round {{remediationRound}}. If this is round 0, this is the 
 
 ## Context
 
-All relevant context has been preloaded below — the roadmap, all slice summaries, UAT results, requirements, decisions, and project context are inlined. Start working immediately without re-reading these files.
+All relevant context has been preloaded below — the roadmap, all slice summaries, assessment results, requirements, decisions, and project context are inlined. Start working immediately without re-reading these files.
 
 {{inlinedContext}}
 
@@ -30,8 +30,8 @@ Prompt: "Review milestone {{milestoneId}} requirements coverage. Working directo
 **Reviewer B — Cross-Slice Integration**
 Prompt: "Review milestone {{milestoneId}} cross-slice integration. Working directory: {{workingDirectory}}. Read `{{roadmapPath}}` and find the boundary map (produces/consumes contracts). For each boundary, check that the producing slice's SUMMARY confirms it produced the artifact, and the consuming slice's SUMMARY confirms it consumed it. Output a markdown table: Boundary | Producer Summary | Consumer Summary | Status. End with a one-line verdict: PASS if all boundaries honored, NEEDS-ATTENTION if any gaps."
 
-**Reviewer C — UAT & Acceptance Criteria**
-Prompt: "Review milestone {{milestoneId}} UAT and acceptance criteria. Working directory: {{workingDirectory}}. Read `.gsd/{{milestoneId}}/CONTEXT.md` for acceptance criteria. Check for UAT-RESULT files in each slice directory. Verify each acceptance criterion maps to either a passing UAT result or clear SUMMARY evidence. Output a checklist: [ ] Criterion | Evidence. End with a one-line verdict: PASS if all criteria met, NEEDS-ATTENTION if gaps exist."
+**Reviewer C — Assessment & Acceptance Criteria**
+Prompt: "Review milestone {{milestoneId}} assessment evidence and acceptance criteria. Working directory: {{workingDirectory}}. Read `.gsd/{{milestoneId}}/CONTEXT.md` for acceptance criteria. Check for ASSESSMENT files in each slice directory. Verify each acceptance criterion maps to either a passing assessment result or clear SUMMARY evidence. Output a checklist: [ ] Criterion | Evidence. End with a one-line verdict: PASS if all criteria met, NEEDS-ATTENTION if gaps exist."
 
 ### Step 2 — Synthesize Findings
 
@@ -59,7 +59,7 @@ reviewers: 3
 ## Reviewer B — Cross-Slice Integration
 <paste Reviewer B output>
 
-## Reviewer C — UAT & Acceptance Criteria
+## Reviewer C — Assessment & Acceptance Criteria
 <paste Reviewer C output>
 
 ## Synthesis

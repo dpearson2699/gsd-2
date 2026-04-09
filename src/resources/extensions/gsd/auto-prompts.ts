@@ -1592,7 +1592,7 @@ export async function buildValidateMilestonePrompt(
     logWarning("prompt", `buildValidateMilestonePrompt verification classes lookup failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // Inline all slice summaries and UAT results
+  // Inline all slice summaries and assessment results
   let valSliceIds: string[] = [];
   try {
     const { isDbAvailable, getMilestoneSlices } = await import("./gsd-db.js");
@@ -1617,10 +1617,10 @@ export async function buildValidateMilestonePrompt(
     const summaryRel = relSliceFile(base, mid, sid, "SUMMARY");
     inlined.push(await inlineFile(summaryPath, summaryRel, `${sid} Summary`));
 
-    const uatPath = resolveSliceFile(base, mid, sid, "UAT");
-    const uatRel = relSliceFile(base, mid, sid, "UAT");
-    const uatInline = await inlineFileOptional(uatPath, uatRel, `${sid} UAT Result`);
-    if (uatInline) inlined.push(uatInline);
+    const assessmentPath = resolveSliceFile(base, mid, sid, "ASSESSMENT");
+    const assessmentRel = relSliceFile(base, mid, sid, "ASSESSMENT");
+    const assessmentInline = await inlineFileOptional(assessmentPath, assessmentRel, `${sid} Assessment`);
+    if (assessmentInline) inlined.push(assessmentInline);
   }
 
   // Aggregate unresolved follow-ups and known limitations across slices
@@ -2150,4 +2150,3 @@ export async function buildRewriteDocsPrompt(
     overridesPath: relGsdRootFile("OVERRIDES"),
   });
 }
-

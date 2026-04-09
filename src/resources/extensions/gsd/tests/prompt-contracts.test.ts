@@ -51,6 +51,12 @@ test("guided discussion prompts avoid wrap-up prompts after every round", () => 
   assert.doesNotMatch(slicePrompt, /I think I have a solid picture of this slice\. Ready to wrap up/i);
 });
 
+test("guided milestone discussion scopes depth verification to the milestone id", () => {
+  const prompt = readPrompt("guided-discuss-milestone");
+  assert.match(prompt, /depth_verification_\{\{milestoneId\}\}/, "depth verification id should include the milestone id");
+  assert.doesNotMatch(prompt, /depth_verification_confirm" — this enables the write-gate downstream/i, "legacy global depth gate wording should be gone");
+});
+
 test("guided-resume-task prompt preserves recovery state until work is superseded", () => {
   const prompt = readPrompt("guided-resume-task");
   assert.match(prompt, /Do \*\*not\*\* delete the continue file immediately/i);
@@ -188,7 +194,8 @@ test("validate-milestone prompt dispatches parallel reviewers", () => {
   assert.match(prompt, /Reviewer C/);
   assert.match(prompt, /Requirements Coverage/);
   assert.match(prompt, /Cross-Slice Integration/);
-  assert.match(prompt, /UAT/);
+  assert.match(prompt, /Assessment & Acceptance Criteria/);
+  assert.match(prompt, /assessment evidence/i);
 });
 
 // ─── Prompt migration: replan-slice → gsd_replan_slice ────────────────
