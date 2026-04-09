@@ -128,7 +128,7 @@ The auto mode dispatch pipeline:
 
 Phase skipping (from token profile) gates steps 2-3: if a phase is skipped, the corresponding unit type is never dispatched.
 
-## Key Modules (v2.63)
+## Key Modules (v2.67)
 
 | Module | Purpose |
 |--------|---------|

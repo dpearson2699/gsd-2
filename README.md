@@ -27,56 +27,66 @@ One command. Walk away. Come back to a built project with clean git history.
 
 ---
 
-## What's New in v2.63.0
+## What's New in v2.67
 
-### MCP Server & Integrations
+### Context Engineering
 
-- **MCP server** — 6 read-only project state tools for external integrations, auto-wrapup guard, and question dedup.
-- **Ollama extension** — first-class local LLM support via Ollama, with dynamic routing enabled by default.
-- **Discord bot & daemon** — dedicated daemon package, Discord bot with 6 discord.js shard event listeners, and headless text mode with tool calls.
+- **Tiered Context Injection (M005)** — relevance-scoped context with 65%+ token reduction. Decision scope cascade derives context from slice metadata instead of blanket injection.
+- **Resilient transient error recovery** — defers to Core RetryHandler and fixes cmdCtx race conditions for more reliable auto-mode sessions.
 
-### Intelligent Model Routing
+### Provider & Model Improvements
 
-- **Capability-aware model routing (ADR-004)** — capability scoring, `before_model_select` hook, and task metadata extraction replace pattern-based model selection.
-- **Stop/backtrack capture classifications** — context optimization with model routing and masking.
+- **Anthropic subscription routing** — users with Anthropic subscriptions are automatically routed through Claude Code CLI provider with proper display names across all UI surfaces.
+- **Claude Code provider hardening** — native Windows claude lookup, fallback guards, and `out of extra usage` error matching.
+- **XML parameter recovery** — pi-ai recovers XML parameters trapped in JSON strings from providers.
 
-### VS Code & TUI
+### Safety & Data Integrity
 
-- **VS Code sidebar redesign** — SCM provider, checkpoints, diagnostics panel, activity feed, workflow controls, session forking, and enhanced code lens.
-- **`/gsd parallel watch`** — native TUI overlay for real-time worker monitoring.
-- **Real-time TUI monitor dashboard** — self-healing dashboard with colorized headless verbose output.
+- **LLM safety harness** — auto-mode damage control prevents the LLM from running destructive operations or querying `gsd.db` directly via bash.
+- **5-wave state machine hardening** — critical data integrity fixes across atomic writes, randomized tmp paths, event log reconciliation, session recovery, and consistency enforcement. 86+ regression tests added.
+- **Discussion gate enforcement** — mechanical enforcement for discussion question gates with fail-closed behavior.
+- **Enhanced verification** — pre-execution plan verification checks, post-execution cross-task consistency checks, blocking behavior and strict mode.
 
-### Agent & Auto-Mode
+### Parallel Execution & Dispatch
 
-- **`/btw` skill** — ephemeral side questions without interrupting the main workflow.
-- **Codebase map** — automatic codebase map injection for fresh agent contexts.
-- **`--resume` flag** — resume previous sessions from the CLI.
-- **Concurrent invocation guard** — prevents overlapping auto-mode runs with parallel worker reliability improvements.
-- **Safety mechanisms on by default** — snapshots and pre-merge checks enabled out of the box.
+- **Slice-level parallelism** — dependency-aware parallel dispatch within a milestone, not just across milestones.
+- **Parallel research slices** — research and milestone validation run in parallel.
+- **Worker model override** — configure different models for parallel milestone workers.
 
-### Infrastructure & Performance
+### TUI & Notifications
 
-- **Topological sort for extensions** — correct load ordering for dependent extensions.
-- **Headless integration hardening** — real-time streaming, verbose output, and observability improvements across v2.54–v2.55.
-- **GLM-5.1 model** — new model support added.
-- **80+ bug fixes** — worktree safety, parallel mode scoping, state corruption, and more.
+- **Persistent notification panel** — TUI overlay, widget, and web API for real-time notifications.
+- **Remote questions race** — local TUI races against remote channel (Slack/Discord) instead of remote-only routing.
+- **OS-specific keyboard shortcuts** — shortcut hints now adapt to macOS/Linux/Windows.
+- **`/gsd show-config`** — inspect active configuration at a glance.
+
+### Infrastructure
+
+- **Ollama native provider** — `/api/chat` provider with full option exposure, `apiKey` auth mode, and headless probe.
+- **MCP OAuth** — MCP client supports OAuth auth provider for HTTP transport.
+- **WAL-safe migration backup** — database migrations create WAL-safe backups with stronger regression tests.
+- **Xcode/xcodegen detection** — project detection now supports Xcode bundles and xcodegen.
+- **170+ bug fixes** — state machine resilience, worktree safety, prompt injection, session recovery, and more.
 
 See the full [Changelog](./CHANGELOG.md) for details on every release.
 
 <details>
-<summary>Previous highlights (v2.52 and earlier)</summary>
+<summary>Previous highlights (v2.63 and earlier)</summary>
 
+- **MCP server** — 6 read-only project state tools for external integrations, auto-wrapup guard, and question dedup
+- **Ollama extension** — first-class local LLM support via Ollama, with dynamic routing enabled by default
+- **Discord bot & daemon** — dedicated daemon package, Discord bot, and headless text mode with tool calls
+- **Capability-aware model routing (ADR-004)** — capability scoring, `before_model_select` hook, and task metadata extraction
+- **VS Code sidebar redesign** — SCM provider, checkpoints, diagnostics panel, activity feed, workflow controls, session forking
+- **`/gsd parallel watch`** — native TUI overlay for real-time worker monitoring
+- **Codebase map** — automatic codebase map injection for fresh agent contexts
+- **`--resume` flag** — resume previous sessions from the CLI
+- **Concurrent invocation guard** — prevents overlapping auto-mode runs
 - **VS Code integration** — status bar, file decorations, bash terminal, session tree, conversation history, and code lens
-- **Capability-based model selection** — replaced model-ID pattern matching with capability metadata
 - **Skills overhaul** — 30+ skill packs covering major frameworks, databases, and cloud platforms
-- **Quality gates** — 8-question quality gates for planning and completion templates
 - **Single-writer state engine** — disciplined state transitions with machine guards and TOCTOU hardening
-- **`/gsd rethink`** — conversational project reorganization
-- **Complete offline mode** — fully offline with local models
-- **Browser-based web interface** — run GSD from the browser with `gsd --web`
 - **DB-backed planning tools** — atomic SQLite tool calls for state transitions
 - **Declarative workflow engine** — YAML workflows through auto-loop
-- **7 data-loss prevention fixes** — hallucination guard, merge anchor verification, dirty tree detection, and more
 - **Doctor: worktree lifecycle checks** — validates worktree health, detects orphans, consolidates cleanup
 
 </details>
