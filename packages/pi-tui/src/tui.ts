@@ -590,6 +590,15 @@ export class TUI extends Container {
 			this.cellSizeQueryPending = false;
 		}
 
+		// Don't hold a bare Escape keypress hostage while waiting for the
+		// optional cell-size response. This is the most common early input race.
+		if (this.inputBuffer === "\x1b") {
+			const result = this.inputBuffer;
+			this.inputBuffer = "";
+			this.cellSizeQueryPending = false;
+			return result;
+		}
+
 		// Check if we have a partial cell size response starting (wait for more data)
 		// Patterns that could be incomplete cell size response: \x1b, \x1b[, \x1b[6, \x1b[6;...(no t yet)
 		const partialCellSizePattern = /\x1b(\[6?;?[\d;]*)?$/;
