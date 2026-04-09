@@ -82,6 +82,7 @@ import { LoginDialogComponent } from "./components/login-dialog.js";
 import { ModelSelectorComponent, providerDisplayName } from "./components/model-selector.js";
 import { OAuthSelectorComponent } from "./components/oauth-selector.js";
 import { ProviderManagerComponent } from "./components/provider-manager.js";
+import { getProviderSetupAction } from "./provider-auth-setup.js";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.js";
 import { SessionSelectorComponent } from "./components/session-selector.js";
 import { SettingsSelectorComponent } from "./components/settings-selector.js";
@@ -3412,9 +3413,21 @@ export class InteractiveMode {
 					this.ui.requestRender();
 				},
 				async (provider: string) => {
-					// Enter key → auth setup for selected provider (#3579)
 					done();
-					await this.showLoginDialog(provider);
+
+					const action = getProviderSetupAction({
+						provider,
+						authMode: this.session.modelRegistry.getProviderAuthMode(provider),
+						hasAuth: this.session.modelRegistry.authStorage.hasAuth(provider),
+					});
+
+					if (action.kind === "oauth-login") {
+						await this.showLoginDialog(provider);
+						return;
+					}
+
+					this.showStatus(action.message);
+					this.ui.requestRender();
 				},
 			);
 			return { component, focus: component };
